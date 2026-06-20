@@ -55,6 +55,136 @@ normalize_path() {
   fi
 }
 
+library_status_label() {
+  local lib="$1"
+  local status
+
+  status="$(status_for_library "$lib")"
+
+  case "$status" in
+    already\ symlinked*) printf '%s\n' "symlinked" ;;
+    local\ compatdata\ folder\ exists) printf '%s\n' "local" ;;
+    *) printf '%s\n' "empty" ;;
+  esac
+}
+
+ui_supported=0
+ui_rows=24
+ui_cols=80
+ui_cursor_saved=0
+
+ui_refresh_size() {
+  ui_rows="$(tput lines 2>/dev/null || printf '24')"
+  ui_cols="$(tput cols 2>/dev/null || printf '80')"
+}
+
+ui_enter() {
+  if [[ "$ui_supported" -ne 1 ]]; then
+    return 1
+  fi
+
+  tput smcup 2>/dev/null || true
+  tput civis 2>/dev/null || true
+  ui_cursor_saved=1
+  return 0
+}
+
+ui_leave() {
+  if [[ "$ui_cursor_saved" -eq 1 ]]; then
+    tput cnorm 2>/dev/null || true
+    tput rmcup 2>/dev/null || true
+    ui_cursor_saved=0
+  fi
+}
+
+ui_init() {
+  if [[ -t 0 && -t 1 && -n "${TERM:-}" && "${TERM}" != "dumb" ]] && command -v tput >/dev/null 2>&1; then
+    ui_supported=1
+    ui_refresh_size
+    trap ui_leave EXIT INT TERM
+    ui_enter
+  fi
+}
+
+ui_clear() {
+  printf '\033[H\033[J'
+}
+
+ui_truncate() {
+  local text="$1"
+  local width="$2"
+
+  if (( width <= 0 )); then
+    printf '%s' ""
+    return 0
+  fi
+
+  if (( ${#text} <= width )); then
+    printf '%s' "$text"
+  elif (( width <= 3 )); then
+    printf '%.*s' "$width" "$text"
+  else
+    printf '%s...' "${text:0:width-3}"
+  fi
+}
+
+ui_read_key() {
+  local key rest
+
+  IFS= read -rsn1 key || return 1
+
+  case "$key" in
+    $'\r'|$'\n')
+      printf '%s' 'ENTER'
+      return 0
+      ;;
+  esac
+
+  if [[ "$key" == $'\x1b' ]]; then
+    if IFS= read -rsn2 -t 0.01 rest; then
+      case "$rest" in
+        "[A"|"OA")
+          printf '%s' 'UP'
+          return 0
+          ;;
+        "[B"|"OB")
+          printf '%s' 'DOWN'
+          return 0
+          ;;
+        "[H"|"[1~")
+          printf '%s' 'HOME'
+          return 0
+          ;;
+        "[F"|"[4~")
+          printf '%s' 'END'
+          return 0
+          ;;
+      esac
+    fi
+  fi
+
+  printf '%s' "$key"
+}
+
+ui_draw_frame() {
+  local title="$1"
+  local subtitle="$2"
+  local footer="$3"
+  local body_top="$4"
+  local body_bottom="$5"
+  local body="$6"
+
+  ui_refresh_size
+  ui_clear
+  printf '%s\n' "$title"
+  printf '%s\n' "$subtitle"
+  printf '%s\n' "$footer"
+  printf '\n'
+  printf '%s\n' "$body_top"
+  printf '%s\n' "$body"
+  printf '%s\n' "$body_bottom"
+}
+
 normalize_library_root() {
   local root="$1"
 
@@ -138,8 +268,10 @@ scan_known_steam_configs() {
 }
 
 scan_libraryfolders_files() {
-  echo
-  echo "Searching likely Steam locations for libraryfolders.vdf files."
+  if [[ "$ui_supported" -eq 0 ]]; then
+    echo
+    echo "Searching likely Steam locations for libraryfolders.vdf files."
+  fi
 
   local roots=(
     "$HOME/.local/share"
@@ -154,7 +286,9 @@ scan_libraryfolders_files() {
   for root in "${roots[@]}"; do
     [[ -d "$root" ]] || continue
 
-    echo "Searching: $root"
+    if [[ "$ui_supported" -eq 0 ]]; then
+      echo "Searching: $root"
+    fi
 
     while IFS= read -r -d '' libraryfolders_file; do
       parse_libraryfolders_vdf "$libraryfolders_file"
@@ -216,7 +350,7 @@ print_libraries() {
     printf '      Source: %s\n' "${LIB_SOURCES[$lib]}"
     printf '      Status: %s\n' "$(status_for_library "$lib")"
     echo
-    ((i++))
+    ((i += 1))
   done
 }
 
@@ -267,6 +401,252 @@ parse_selection() {
   done
 }
 
+screen_render_selection() {
+  local -n libs_ref=$1
+  local -n checked_ref=$2
+  local cursor_index="$3"
+  local title="Steam compatdata mover"
+  local main_library="$4"
+  local dest_base="$5"
+  local total="${#libs_ref[@]}"
+  local selected=0
+  local i
+
+  for i in "${!libs_ref[@]}"; do
+    if [[ "${checked_ref[$i]:-0}" -eq 1 ]]; then
+      ((selected += 1))
+    fi
+  done
+
+  ui_refresh_size
+  ui_clear
+
+  printf '%s\n' "$title"
+  printf 'Main library: %s\n' "$main_library"
+  printf 'Destination:  %s\n' "$dest_base"
+  printf 'Selected:     %d/%d\n' "$selected" "$total"
+  printf '\n'
+  printf 'Move selection\n'
+  printf '\n'
+
+  local header_rows=7
+  local footer_rows=4
+  local list_rows=$((ui_rows - header_rows - footer_rows))
+  if (( list_rows < 3 )); then
+    list_rows=3
+  fi
+
+  local start_index=0
+  if (( cursor_index >= list_rows )); then
+    start_index=$((cursor_index - list_rows + 1))
+  fi
+  if (( start_index > total - list_rows )); then
+    start_index=$((total - list_rows))
+  fi
+  if (( start_index < 0 )); then
+    start_index=0
+  fi
+
+  local end_index=$((start_index + list_rows))
+  if (( end_index > total )); then
+    end_index=$total
+  fi
+
+  local line index marker checked label status lib_width status_width
+  status_width=12
+  lib_width=$((ui_cols - 18 - status_width))
+  if (( lib_width < 20 )); then
+    lib_width=20
+  fi
+
+  for ((index=start_index; index<end_index; index++)); do
+    marker=" "
+    [[ "$index" -eq "$cursor_index" ]] && marker=">"
+    checked=" "
+    [[ "${checked_ref[$index]:-0}" -eq 1 ]] && checked="x"
+    label="$(library_status_label "${libs_ref[$index]}")"
+    status="$(status_for_library "${libs_ref[$index]}")"
+    line="$(ui_truncate "${libs_ref[$index]}" "$lib_width")"
+    printf '%s [%s] %3d %-12s %s\n' "$marker" "$checked" $((index + 1)) "[$label]" "$line"
+  done
+
+  printf '\n'
+  printf 'Use arrows, Space, a, n, Enter, q.\n'
+  if (( cursor_index >= 0 && cursor_index < total )); then
+    printf 'Source: %s\n' "${LIB_SOURCES[${libs_ref[$cursor_index]}]:-unknown}"
+  fi
+}
+
+screen_select_libraries() {
+  local -n libs_ref=$1
+  local -n out_ref=$2
+  local main_library="$3"
+  local dest_base="$4"
+  local total="${#libs_ref[@]}"
+  local -a checked=()
+  local cursor=0
+  local i key selected_count
+
+  for ((i=0; i<total; i++)); do
+    if [[ "$(library_status_label "${libs_ref[$i]}")" == "local" ]]; then
+      checked[$i]=1
+    else
+      checked[$i]=0
+    fi
+  done
+
+  while true; do
+    screen_render_selection "$1" checked "$cursor" "$main_library" "$dest_base"
+    key="$(ui_read_key)" || return 1
+
+    case "$key" in
+      UP)
+        if (( cursor > 0 )); then
+          cursor=$((cursor - 1))
+        fi
+        ;;
+      DOWN)
+        if (( cursor < total - 1 )); then
+          ((cursor += 1))
+        fi
+        ;;
+      HOME)
+        cursor=0
+        ;;
+      END)
+        cursor=$((total - 1))
+        ;;
+      " ")
+        if [[ "${checked[$cursor]:-0}" -eq 1 ]]; then
+          checked[$cursor]=0
+        else
+          checked[$cursor]=1
+        fi
+        ;;
+      a|A)
+        for ((i=0; i<total; i++)); do
+          checked[$i]=1
+        done
+        ;;
+      n|N)
+        for ((i=0; i<total; i++)); do
+          checked[$i]=0
+        done
+        ;;
+      ENTER)
+        break
+        ;;
+      q|Q)
+        return 1
+        ;;
+    esac
+  done
+
+  out_ref=()
+  for ((i=0; i<total; i++)); do
+    if [[ "${checked[$i]:-0}" -eq 1 ]]; then
+      out_ref+=("$((i + 1))")
+    fi
+  done
+
+  selected_count="${#out_ref[@]}"
+  if (( selected_count == 0 )); then
+    return 2
+  fi
+
+  return 0
+}
+
+screen_confirm_selection() {
+  local -n libs_ref=$1
+  local -n selected_ref=$2
+  local dest_base="$3"
+  local main_library="$4"
+  local title="Confirm move"
+  local total="${#selected_ref[@]}"
+  local i
+
+  while true; do
+    ui_refresh_size
+    ui_clear
+    printf '%s\n' "$title"
+    printf 'Main library: %s\n' "$main_library"
+    printf 'Destination:  %s\n' "$dest_base"
+    printf 'Selected:     %d\n' "$total"
+    printf '\n'
+    printf 'Proceed with these libraries?\n'
+    printf '\n'
+
+    local start=0
+    local limit=$((ui_rows - 10))
+    if (( limit < 3 )); then
+      limit=3
+    fi
+    local end=$total
+    if (( end > limit )); then
+      end=$limit
+    fi
+
+    for ((i=start; i<end; i++)); do
+      printf '  [%d] %s\n' "${selected_ref[$i]}" "${libs_ref[$((selected_ref[$i]-1))]}"
+    done
+
+    if (( total > end )); then
+      printf '  ... and %d more\n' $((total - end))
+    fi
+
+    printf '\n'
+    printf 'Press y to apply, b to go back, q to quit.\n'
+
+    case "$(ui_read_key)" in
+      y|Y|ENTER)
+        return 0
+        ;;
+      b|B)
+        return 2
+        ;;
+      q|Q)
+        return 1
+        ;;
+    esac
+  done
+}
+
+screen_show_progress() {
+  local current="$1"
+  local total="$2"
+  local lib="$3"
+  local dest="$4"
+  local message="$5"
+
+  ui_refresh_size
+  ui_clear
+  printf 'Steam compatdata mover\n\n'
+  printf 'Processing %d/%d\n' "$current" "$total"
+  printf 'Library:     %s\n' "$lib"
+  printf 'Destination:  %s\n' "$dest"
+  printf '\n'
+  printf '%s\n' "$message"
+}
+
+screen_show_summary() {
+  local -n results_ref=$1
+  local dest_base="$2"
+  local i
+
+  ui_refresh_size
+  ui_clear
+  printf 'Steam compatdata mover\n\n'
+  printf 'Finished.\n'
+  printf 'Destination: %s\n' "$dest_base"
+  printf '\n'
+  for i in "${results_ref[@]}"; do
+    printf '%s\n' "$i"
+  done
+  printf '\nPress any key to exit.\n'
+  ui_read_key >/dev/null || true
+}
+
 ensure_destination_ready() {
   local dest="$1"
 
@@ -294,12 +674,17 @@ destination_base_for_main_library() {
 
 fix_ownership_if_needed() {
   local target="$1"
+  local quiet="${2:-0}"
 
   if [[ ! -e "$target" ]]; then
     return 0
   fi
 
   if [[ -O "$target" ]]; then
+    return 0
+  fi
+
+  if [[ "$quiet" -eq 1 ]]; then
     return 0
   fi
 
@@ -320,61 +705,90 @@ fix_ownership_if_needed() {
 move_library_compatdata() {
   local lib="$1"
   local dest_base="$2"
+  local quiet="${3:-0}"
 
   local steamapps="$lib/steamapps"
   local compat="$steamapps/compatdata"
   local dest="$dest_base/$(safe_name_for_library "$lib")"
 
-  echo
-  echo "Library:"
-  echo "  $lib"
-  echo "Compatdata:"
-  echo "  $compat"
-  echo "Destination:"
-  echo "  $dest"
+  if [[ "$quiet" -eq 0 ]]; then
+    echo
+    echo "Library:"
+    echo "  $lib"
+    echo "Compatdata:"
+    echo "  $compat"
+    echo "Destination:"
+    echo "  $dest"
+  fi
 
   if [[ ! -d "$steamapps" ]]; then
-    echo "Skipping: steamapps folder does not exist."
+    if [[ "$quiet" -eq 0 ]]; then
+      echo "Skipping: steamapps folder does not exist."
+    fi
+    printf 'skipped: no steamapps for %s\n' "$lib"
     return 0
   fi
 
   if [[ -L "$compat" ]]; then
-    echo "Skipping: compatdata is already a symlink."
-    echo "Current target: $(readlink "$compat")"
+    if [[ "$quiet" -eq 0 ]]; then
+      echo "Skipping: compatdata is already a symlink."
+      echo "Current target: $(readlink "$compat")"
+    fi
+    printf 'skipped: already symlinked for %s\n' "$lib"
     return 0
   fi
 
   if [[ -e "$compat" && ! -d "$compat" ]]; then
-    echo "Skipping: compatdata exists but is not a directory."
+    if [[ "$quiet" -eq 0 ]]; then
+      echo "Skipping: compatdata exists but is not a directory."
+    fi
+    printf 'skipped: compatdata not a directory for %s\n' "$lib"
     return 0
   fi
 
   if ! ensure_destination_ready "$dest"; then
-    echo "Skipping this library to avoid overwriting data."
+    if [[ "$quiet" -eq 0 ]]; then
+      echo "Skipping this library to avoid overwriting data."
+    fi
+    printf 'skipped: destination not ready for %s\n' "$lib"
     return 0
   fi
 
   if [[ -d "$compat" ]]; then
-    echo "Moving compatdata..."
+    if [[ "$quiet" -eq 0 ]]; then
+      echo "Moving compatdata..."
+    fi
     if [[ -d "$dest" ]]; then
       rmdir "$dest"
     fi
     mv "$compat" "$dest"
   else
-    echo "No compatdata folder exists yet; creating destination folder."
+    if [[ "$quiet" -eq 0 ]]; then
+      echo "No compatdata folder exists yet; creating destination folder."
+    fi
     mkdir -p "$dest"
   fi
 
-  echo "Creating symlink..."
+  if [[ "$quiet" -eq 0 ]]; then
+    echo "Creating symlink..."
+  fi
   ln -s "$dest" "$compat"
 
-  fix_ownership_if_needed "$dest"
+  fix_ownership_if_needed "$dest" "$quiet"
 
-  echo "Done:"
-  echo "  $compat -> $dest"
+  if [[ "$quiet" -eq 0 ]]; then
+    echo "Done:"
+    echo "  $compat -> $dest"
+  fi
+  printf 'moved: %s\n' "$lib"
 }
 
-main() {
+run_text_flow() {
+  local DEST_BASE
+  local -a selected_numbers=()
+  local result
+  local num
+
   echo "Steam compatdata mover"
   echo
   echo "This moves Proton/Wine prefixes into your main Steam library"
@@ -401,7 +815,6 @@ main() {
     exit 1
   fi
 
-  local DEST_BASE
   if ! DEST_BASE="$(destination_base_for_main_library)"; then
     exit 1
   fi
@@ -424,8 +837,6 @@ main() {
   echo
 
   read -r -p "Selection: " selection_raw
-
-  declare -a selected_numbers
   parse_selection "$selection_raw" "${#libraries[@]}" selected_numbers
 
   if (( ${#selected_numbers[@]} == 0 )); then
@@ -436,7 +847,6 @@ main() {
   mkdir -p "$DEST_BASE"
 
   echo "Selected libraries:"
-  local num
   for num in "${selected_numbers[@]}"; do
     echo "  [$num] ${libraries[$((num-1))]}"
   done
@@ -448,7 +858,8 @@ main() {
   fi
 
   for num in "${selected_numbers[@]}"; do
-    move_library_compatdata "${libraries[$((num-1))]}" "$DEST_BASE"
+    result="$(move_library_compatdata "${libraries[$((num-1))]}" "$DEST_BASE" 0)"
+    echo "$result"
   done
 
   echo
@@ -458,6 +869,118 @@ main() {
   echo "  ls -l /path/to/SteamLibrary/steamapps/compatdata"
   echo
   echo "Then start Steam normally, without sudo."
+}
+
+run_tui_flow() {
+  local DEST_BASE
+  local -a selected_numbers=()
+  local -a results=()
+  local choice
+  local idx
+  local num
+  local lib
+  local result
+  local action_text
+  local total
+
+  ui_clear
+  printf 'Steam compatdata mover\n\n'
+  printf 'Discovering Steam libraries...\n'
+
+  scan_known_steam_configs
+  scan_libraryfolders_files
+
+  mapfile -t libraries < <(
+    for lib in "${!LIBS[@]}"; do
+      printf '%s\n' "$lib"
+    done | sort
+  )
+
+  if (( ${#libraries[@]} == 0 )); then
+    ui_clear
+    printf 'Steam compatdata mover\n\n'
+    printf 'No Steam libraries found.\n'
+    printf '\nPress any key to exit.\n'
+    ui_read_key >/dev/null || true
+    return 1
+  fi
+
+  if ! DEST_BASE="$(destination_base_for_main_library)"; then
+    ui_clear
+    printf 'Steam compatdata mover\n\n'
+    printf 'Could not determine the main Steam library.\n'
+    printf '\nPress any key to exit.\n'
+    ui_read_key >/dev/null || true
+    return 1
+  fi
+
+  while true; do
+    if screen_select_libraries libraries selected_numbers "$MAIN_LIBRARY" "$DEST_BASE"; then
+      :
+    else
+      choice=$?
+      case "$choice" in
+        2)
+          continue
+          ;;
+        *)
+          return 0
+          ;;
+      esac
+    fi
+
+    if screen_confirm_selection libraries selected_numbers "$DEST_BASE" "$MAIN_LIBRARY"; then
+      break
+    else
+      choice=$?
+      case "$choice" in
+        2)
+          continue
+          ;;
+        *)
+          return 0
+          ;;
+      esac
+    fi
+  done
+
+  total="${#selected_numbers[@]}"
+  mkdir -p "$DEST_BASE"
+
+  idx=1
+  for num in "${selected_numbers[@]}"; do
+    lib="${libraries[$((num-1))]}"
+    screen_show_progress "$idx" "$total" "$lib" "$DEST_BASE" "Moving compatdata..."
+    if result="$(move_library_compatdata "$lib" "$DEST_BASE" 1)"; then
+      case "$result" in
+        moved:*)
+          action_text="moved"
+          ;;
+        skipped:*)
+          action_text="${result#skipped: }"
+          ;;
+        *)
+          action_text="$result"
+          ;;
+      esac
+    else
+      action_text="failed"
+    fi
+    results+=("[$num] $lib: $action_text")
+    ((idx += 1))
+  done
+
+  screen_show_summary results "$DEST_BASE"
+}
+
+main() {
+  ui_init
+
+  if [[ "$ui_supported" -eq 1 ]]; then
+    run_tui_flow
+  else
+    run_text_flow
+  fi
 }
 
 main "$@"
