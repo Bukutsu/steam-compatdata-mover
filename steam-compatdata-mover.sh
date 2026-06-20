@@ -16,7 +16,6 @@ fi
 
 USER_NAME="${USER:-$(id -un)}"
 USER_GROUP="$(id -gn)"
-DEST_DIR_NAME="compatdata-moved"
 
 declare -A LIBS=()
 declare -A LIB_SOURCES=()
@@ -58,6 +57,11 @@ normalize_path() {
 library_status_label() {
   local lib="$1"
   local status
+
+  if [[ -n "$MAIN_LIBRARY" ]] && [[ "$(normalize_path "$lib")" == "$(normalize_path "$MAIN_LIBRARY")" ]]; then
+    echo "native"
+    return 0
+  fi
 
   status="$(status_for_library "$lib")"
 
@@ -304,27 +308,6 @@ scan_libraryfolders_files() {
         -path '*/steamapps/libraryfolders.vdf' -type f -print0 2>/dev/null
     )
   done
-}
-
-path_hash() {
-  local input="$1"
-
-  if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s' "$input" | sha256sum | awk '{print substr($1,1,12)}'
-  else
-    printf '%s' "$input" | cksum | awk '{print $1}'
-  fi
-}
-
-safe_name_for_library() {
-  local lib="$1"
-  local base hash
-
-  base="$(basename "$lib")"
-  base="${base//[^A-Za-z0-9._-]/_}"
-  hash="$(path_hash "$lib")"
-
-  printf '%s-%s\n' "$base" "$hash"
 }
 
 status_for_library() {
@@ -688,29 +671,46 @@ print_final_summary() {
   done
 }
 
-ensure_destination_ready() {
-  local dest="$1"
-
-  if [[ -e "$dest" ]]; then
-    if [[ -d "$dest" ]] && [[ -z "$(find "$dest" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
-      return 0
-    fi
-
-    echo "Destination already exists and is not empty:"
-    echo "  $dest"
-    return 1
-  fi
-
-  mkdir -p "$(dirname "$dest")"
-}
-
 destination_base_for_main_library() {
   if [[ -z "$MAIN_LIBRARY" ]]; then
     echo "Could not determine the main Steam library." >&2
     return 1
   fi
 
-  normalize_path "$MAIN_LIBRARY/steamapps/$DEST_DIR_NAME"
+  normalize_path "$MAIN_LIBRARY/steamapps/compatdata"
+}
+
+ensure_native_destination_ready() {
+  local dest="$1"
+
+  if [[ -e "$dest" && ! -d "$dest" ]]; then
+    echo "Destination already exists and is not a directory:"
+    echo "  $dest"
+    return 1
+  fi
+
+  mkdir -p "$dest"
+}
+
+move_directory_entries() {
+  local src="$1"
+  local dest="$2"
+  local item base
+  local -a entries=()
+
+  while IFS= read -r -d '' item; do
+    base="$(basename "$item")"
+    if [[ -e "$dest/$base" || -L "$dest/$base" ]]; then
+      return 1
+    fi
+    entries+=("$item")
+  done < <(find "$src" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+
+  for item in "${entries[@]}"; do
+    mv "$item" "$dest/"
+  done
+
+  rmdir "$src"
 }
 
 fix_ownership_if_needed() {
@@ -750,7 +750,7 @@ move_library_compatdata() {
 
   local steamapps="$lib/steamapps"
   local compat="$steamapps/compatdata"
-  local dest="$dest_base/$(safe_name_for_library "$lib")"
+  local dest="$dest_base"
 
   if [[ "$quiet" -eq 0 ]]; then
     echo
@@ -767,6 +767,15 @@ move_library_compatdata() {
       echo "Skipping: steamapps folder does not exist."
     fi
     printf 'skipped: no steamapps for %s\n' "$lib"
+    return 0
+  fi
+
+  if [[ "$(normalize_path "$compat")" == "$(normalize_path "$dest")" ]]; then
+    if [[ "$quiet" -eq 0 ]]; then
+      echo "Skipping: this is already the native main library compatdata folder."
+    fi
+    mkdir -p "$dest"
+    printf 'skipped: already native main library for %s\n' "$lib"
     return 0
   fi
 
@@ -787,7 +796,7 @@ move_library_compatdata() {
     return 0
   fi
 
-  if ! ensure_destination_ready "$dest"; then
+  if ! ensure_native_destination_ready "$dest"; then
     if [[ "$quiet" -eq 0 ]]; then
       echo "Skipping this library to avoid overwriting data."
     fi
@@ -799,15 +808,17 @@ move_library_compatdata() {
     if [[ "$quiet" -eq 0 ]]; then
       echo "Moving compatdata..."
     fi
-    if [[ -d "$dest" ]]; then
-      rmdir "$dest"
+    if ! move_directory_entries "$compat" "$dest"; then
+      if [[ "$quiet" -eq 0 ]]; then
+        echo "Skipping this library to avoid overwriting data."
+      fi
+      printf 'skipped: destination conflict for %s\n' "$lib"
+      return 0
     fi
-    mv "$compat" "$dest"
   else
     if [[ "$quiet" -eq 0 ]]; then
-      echo "No compatdata folder exists yet; creating destination folder."
+      echo "No compatdata folder exists yet; using native main compatdata folder."
     fi
-    mkdir -p "$dest"
   fi
 
   if [[ "$quiet" -eq 0 ]]; then
@@ -881,7 +892,7 @@ run_text_flow() {
   parse_selection "$selection_raw" "${#libraries[@]}" selected_numbers
 
   if (( ${#selected_numbers[@]} == 0 )); then
-    echo "No valid libraries selected."
+    echo "No libraries selected. No changes applied."
     exit 0
   fi
 
@@ -962,7 +973,10 @@ run_tui_flow() {
       choice=$?
       case "$choice" in
         2)
-          continue
+          ui_leave
+          results=("No libraries selected. No changes applied.")
+          print_final_summary results "$DEST_BASE"
+          return 0
           ;;
         *)
           return 0

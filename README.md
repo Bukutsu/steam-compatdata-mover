@@ -14,7 +14,7 @@ In a capable terminal, the script opens a keyboard-driven TUI for choosing which
 
 ## Notes
 
-- Automatic destination: `<main Steam library>/steamapps/compatdata-moved`
+- Automatic destination: `<main Steam library>/steamapps/compatdata`
 - Existing non-empty destinations are skipped to avoid overwriting data.
 - Already symlinked compatdata folders are skipped.
 - The text prompt flow is used automatically if the terminal UI is not available.
