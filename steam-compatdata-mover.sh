@@ -137,6 +137,11 @@ ui_read_key() {
 
   IFS= read -rsn1 key || return 1
 
+  if [[ -z "$key" ]]; then
+    printf '%s' 'ENTER'
+    return 0
+  fi
+
   case "$key" in
     " ")
       printf '%s' 'SPACE'
