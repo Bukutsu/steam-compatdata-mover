@@ -134,6 +134,10 @@ ui_read_key() {
   IFS= read -rsn1 key || return 1
 
   case "$key" in
+    " ")
+      printf '%s' 'SPACE'
+      return 0
+      ;;
     $'\r'|$'\n')
       printf '%s' 'ENTER'
       return 0
@@ -452,9 +456,9 @@ screen_render_selection() {
     end_index=$total
   fi
 
-  local line index marker checked label status lib_width status_width
+  local line index marker checkbox label state lib_width status_width
   status_width=12
-  lib_width=$((ui_cols - 18 - status_width))
+  lib_width=$((ui_cols - 24 - status_width))
   if (( lib_width < 20 )); then
     lib_width=20
   fi
@@ -462,16 +466,19 @@ screen_render_selection() {
   for ((index=start_index; index<end_index; index++)); do
     marker=" "
     [[ "$index" -eq "$cursor_index" ]] && marker=">"
-    checked=" "
-    [[ "${checked_ref[$index]:-0}" -eq 1 ]] && checked="x"
+    checkbox="[ ]"
+    state="OFF"
+    if [[ "${checked_ref[$index]:-0}" -eq 1 ]]; then
+      checkbox="[X]"
+      state="ON "
+    fi
     label="$(library_status_label "${libs_ref[$index]}")"
-    status="$(status_for_library "${libs_ref[$index]}")"
     line="$(ui_truncate "${libs_ref[$index]}" "$lib_width")"
-    printf '%s [%s] %3d %-12s %s\n' "$marker" "$checked" $((index + 1)) "[$label]" "$line"
+    printf '%s %s %s %3d %-12s %s\n' "$marker" "$checkbox" "$state" $((index + 1)) "[$label]" "$line"
   done
 
   printf '\n'
-  printf 'Use arrows, Space, a, n, Enter, q.\n'
+  printf 'Arrows move  Space toggles  a selects all  n clears  Enter confirms  q quits\n'
   if (( cursor_index >= 0 && cursor_index < total )); then
     printf 'Source: %s\n' "${LIB_SOURCES[${libs_ref[$cursor_index]}]:-unknown}"
   fi
@@ -516,7 +523,7 @@ screen_select_libraries() {
       END)
         cursor=$((total - 1))
         ;;
-      " ")
+      SPACE)
         if [[ "${checked[$cursor]:-0}" -eq 1 ]]; then
           checked[$cursor]=0
         else
@@ -645,6 +652,20 @@ screen_show_summary() {
   done
   printf '\nPress any key to exit.\n'
   ui_read_key >/dev/null || true
+}
+
+print_final_summary() {
+  local -n results_ref=$1
+  local dest_base="$2"
+  local i
+
+  printf 'Steam compatdata mover\n\n'
+  printf 'Finished.\n'
+  printf 'Destination: %s\n' "$dest_base"
+  printf '\n'
+  for i in "${results_ref[@]}"; do
+    printf '%s\n' "$i"
+  done
 }
 
 ensure_destination_ready() {
@@ -970,7 +991,8 @@ run_tui_flow() {
     ((idx += 1))
   done
 
-  screen_show_summary results "$DEST_BASE"
+  ui_leave
+  print_final_summary results "$DEST_BASE"
 }
 
 main() {
