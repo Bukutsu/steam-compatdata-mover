@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 # Interactive Steam compatdata mover
-# Moves selected Steam library steamapps/compatdata folders into your home directory,
-# then replaces the original compatdata folder with a symlink.
+# Moves selected Steam library steamapps/compatdata folders into your main Steam
+# library, then replaces the original compatdata folder with a symlink.
 #
 # Do NOT run this script with sudo.
 # Run Steam normally after using it.
@@ -16,10 +16,12 @@ fi
 
 USER_NAME="${USER:-$(id -un)}"
 USER_GROUP="$(id -gn)"
-DEST_BASE_DEFAULT="$HOME/.steam-compatdata-libraries"
+DEST_DIR_NAME="compatdata-moved"
 
 declare -A LIBS=()
 declare -A LIB_SOURCES=()
+declare -A VDF_FILES=()
+MAIN_LIBRARY=""
 
 prompt_yes_no() {
   local prompt="$1"
@@ -53,14 +55,20 @@ normalize_path() {
   fi
 }
 
+normalize_library_root() {
+  local root="$1"
+
+  root="${root/#\~/$HOME}"
+  normalize_path "$root"
+}
+
 add_library() {
   local root="$1"
   local source="$2"
 
   [[ -z "$root" ]] && return 0
 
-  root="${root/#\~/$HOME}"
-  root="$(normalize_path "$root")"
+  root="$(normalize_library_root "$root")"
 
   if [[ -d "$root/steamapps" ]]; then
     LIBS["$root"]=1
@@ -73,15 +81,33 @@ add_library() {
   fi
 }
 
+add_main_library() {
+  local root="$1"
+  local source="$2"
+
+  root="$(normalize_library_root "$root")"
+  add_library "$root" "$source"
+
+  if [[ -z "$MAIN_LIBRARY" && -d "$root/steamapps" ]]; then
+    MAIN_LIBRARY="$root"
+  fi
+}
+
 parse_libraryfolders_vdf() {
   local file="$1"
 
   [[ -f "$file" ]] || return 0
 
+  file="$(normalize_path "$file")"
+  if [[ -n "${VDF_FILES[$file]:-}" ]]; then
+    return 0
+  fi
+  VDF_FILES["$file"]=1
+
   local base
   base="$(dirname "$(dirname "$file")")"
 
-  add_library "$base" "Steam main library"
+  add_main_library "$base" "Steam main library"
 
   while IFS= read -r path; do
     path="${path//\\\\/\\}"
@@ -106,53 +132,40 @@ scan_known_steam_configs() {
     parse_libraryfolders_vdf "$file"
   done
 
-  add_library "$HOME/.local/share/Steam" "common Steam path"
-  add_library "$HOME/.steam/steam" "common Steam path"
-  add_library "$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam" "Flatpak Steam path"
+  add_main_library "$HOME/.local/share/Steam" "common Steam path"
+  add_main_library "$HOME/.steam/steam" "common Steam path"
+  add_main_library "$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam" "Flatpak Steam path"
 }
 
-get_mounts() {
-  if command -v findmnt >/dev/null 2>&1; then
-    findmnt -rn -o TARGET,FSTYPE |
-      awk '
-        $2 !~ /^(proc|sysfs|devtmpfs|devpts|tmpfs|securityfs|cgroup|cgroup2|pstore|efivarfs|mqueue|hugetlbfs|debugfs|tracefs|fusectl|configfs|overlay|squashfs|autofs|binfmt_misc|rpc_pipefs)$/ {
-          print $1
-        }
-      '
-  else
-    awk '
-      $3 !~ /^(proc|sysfs|devtmpfs|devpts|tmpfs|securityfs|cgroup|cgroup2|pstore|efivarfs|mqueue|hugetlbfs|debugfs|tracefs|fusectl|configfs|overlay|squashfs|autofs|binfmt_misc|rpc_pipefs)$/ {
-        print $2
-      }
-    ' /proc/mounts
-  fi
-}
-
-scan_all_mounted_drives() {
+scan_libraryfolders_files() {
   echo
-  echo "Scanning mounted drives for libraryfolders.vdf files."
-  echo "This is faster than searching for every steamapps folder."
+  echo "Searching likely Steam locations for libraryfolders.vdf files."
 
-  local mountpoint
-  while IFS= read -r mountpoint; do
-    [[ -d "$mountpoint" ]] || continue
+  local roots=(
+    "$HOME/.local/share"
+    "$HOME/.steam"
+    "$HOME/.var/app/com.valvesoftware.Steam/.local/share"
+    "/run/media/$USER_NAME"
+    "/media/$USER_NAME"
+    "/mnt"
+  )
 
-    # Avoid scanning pseudo or huge system areas directly.
-    case "$mountpoint" in
-      /proc|/sys|/dev|/run|/snap|/boot/efi) continue ;;
-    esac
+  local root
+  for root in "${roots[@]}"; do
+    [[ -d "$root" ]] || continue
 
-    echo "Scanning: $mountpoint"
+    echo "Searching: $root"
 
     while IFS= read -r -d '' libraryfolders_file; do
       parse_libraryfolders_vdf "$libraryfolders_file"
     done < <(
-      find "$mountpoint" \
+      find "$root" \
         -xdev \
-        \( -path '*/.cache' -o -path '*/.Trash-*' -o -path '*/lost+found' \) -prune -o \
-        -type f -name libraryfolders.vdf -print0 2>/dev/null
+        -maxdepth 6 \
+        \( -path '*/.cache' -o -path '*/.Trash-*' -o -path '*/lost+found' -o -path '*/Trash/files' \) -prune -o \
+        -path '*/steamapps/libraryfolders.vdf' -type f -print0 2>/dev/null
     )
-  done < <(get_mounts)
+  done
 }
 
 path_hash() {
@@ -267,7 +280,16 @@ ensure_destination_ready() {
     return 1
   fi
 
-  mkdir -p "$dest"
+  mkdir -p "$(dirname "$dest")"
+}
+
+destination_base_for_main_library() {
+  if [[ -z "$MAIN_LIBRARY" ]]; then
+    echo "Could not determine the main Steam library." >&2
+    return 1
+  fi
+
+  normalize_path "$MAIN_LIBRARY/steamapps/$DEST_DIR_NAME"
 }
 
 fix_ownership_if_needed() {
@@ -334,6 +356,9 @@ move_library_compatdata() {
 
   if [[ -d "$compat" ]]; then
     echo "Moving compatdata..."
+    if [[ -d "$dest" ]]; then
+      rmdir "$dest"
+    fi
     mv "$compat" "$dest"
   else
     echo "No compatdata folder exists yet; creating destination folder."
@@ -352,8 +377,8 @@ move_library_compatdata() {
 main() {
   echo "Steam compatdata mover"
   echo
-  echo "This moves Proton/Wine prefixes out of Steam library folders"
-  echo "and replaces each compatdata folder with a symlink."
+  echo "This moves Proton/Wine prefixes into your main Steam library"
+  echo "and replaces each original compatdata folder with a symlink."
   echo
   echo "Close Steam before continuing."
 
@@ -362,10 +387,7 @@ main() {
   fi
 
   scan_known_steam_configs
-
-  if prompt_yes_no "Also search mounted drives for libraryfolders.vdf?" "y"; then
-    scan_all_mounted_drives
-  fi
+  scan_libraryfolders_files
 
   mapfile -t libraries < <(
     for lib in "${!LIBS[@]}"; do
@@ -379,7 +401,19 @@ main() {
     exit 1
   fi
 
+  local DEST_BASE
+  if ! DEST_BASE="$(destination_base_for_main_library)"; then
+    exit 1
+  fi
+
   print_libraries libraries
+
+  echo "Main Steam library:"
+  echo "  $MAIN_LIBRARY"
+  echo
+  echo "Automatic destination:"
+  echo "  $DEST_BASE"
+  echo
 
   echo "Choose libraries to move."
   echo "Examples:"
@@ -399,18 +433,7 @@ main() {
     exit 0
   fi
 
-  echo
-  read -r -p "Destination base [$DEST_BASE_DEFAULT]: " DEST_BASE
-  DEST_BASE="${DEST_BASE:-$DEST_BASE_DEFAULT}"
-  DEST_BASE="${DEST_BASE/#\~/$HOME}"
-  DEST_BASE="$(normalize_path "$DEST_BASE")"
-
   mkdir -p "$DEST_BASE"
-
-  echo
-  echo "Selected destination:"
-  echo "  $DEST_BASE"
-  echo
 
   echo "Selected libraries:"
   local num
