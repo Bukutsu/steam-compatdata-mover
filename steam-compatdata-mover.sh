@@ -459,7 +459,7 @@ screen_render_selection() {
   done
 
   printf '\n'
-  printf 'Arrows move  Space toggles  a selects all  n clears  Enter confirms  q quits\n'
+  printf 'Arrows move  Space toggles  a selects all  n clears  Enter applies  q quits\n'
   if (( cursor_index >= 0 && cursor_index < total )); then
     printf 'Source: %s\n' "${LIB_SOURCES[${libs_ref[$cursor_index]}]:-unknown}"
   fi
@@ -543,83 +543,6 @@ screen_select_libraries() {
   fi
 
   return 0
-}
-
-screen_confirm_selection() {
-  local -n libs_ref=$1
-  local -n selected_ref=$2
-  local dest_base="$3"
-  local main_library="$4"
-  local title="Confirm move"
-  local total="${#selected_ref[@]}"
-  local action=0
-  local i
-
-  while true; do
-    ui_refresh_size
-    ui_clear
-    printf '%s\n' "$title"
-    printf 'Main library: %s\n' "$main_library"
-    printf 'Destination:  %s\n' "$dest_base"
-    printf 'Selected:     %d\n' "$total"
-    printf '\n'
-    printf 'Proceed with these libraries?\n'
-    printf '\n'
-
-    local start=0
-    local limit=$((ui_rows - 10))
-    if (( limit < 3 )); then
-      limit=3
-    fi
-    local end=$total
-    if (( end > limit )); then
-      end=$limit
-    fi
-
-    for ((i=start; i<end; i++)); do
-      printf '  [%d] %s\n' "${selected_ref[$i]}" "${libs_ref[$((selected_ref[$i]-1))]}"
-    done
-
-    if (( total > end )); then
-      printf '  ... and %d more\n' $((total - end))
-    fi
-
-    printf '\n'
-    if (( action == 0 )); then
-      printf '> Apply changes\n'
-      printf '  Back\n'
-    else
-      printf '  Apply changes\n'
-      printf '> Back\n'
-    fi
-    printf '\n'
-    printf 'Use arrows, Enter, q.\n'
-
-    case "$(ui_read_key)" in
-      UP|DOWN)
-        if (( action == 0 )); then
-          action=1
-        else
-          action=0
-        fi
-        ;;
-      ENTER)
-        if (( action == 0 )); then
-          return 0
-        fi
-        return 2
-        ;;
-      y|Y)
-        return 0
-        ;;
-      b|B)
-        return 2
-        ;;
-      q|Q)
-        return 1
-        ;;
-    esac
-  done
 }
 
 screen_show_progress() {
@@ -966,38 +889,21 @@ run_tui_flow() {
     return 1
   fi
 
-  while true; do
-    if screen_select_libraries libraries selected_numbers "$MAIN_LIBRARY" "$DEST_BASE"; then
-      :
-    else
-      choice=$?
-      case "$choice" in
-        2)
-          ui_leave
-          results=("No libraries selected. No changes applied.")
-          print_final_summary results "$DEST_BASE"
-          return 0
-          ;;
-        *)
-          return 0
-          ;;
-      esac
-    fi
-
-    if screen_confirm_selection libraries selected_numbers "$DEST_BASE" "$MAIN_LIBRARY"; then
-      break
-    else
-      choice=$?
-      case "$choice" in
-        2)
-          continue
-          ;;
-        *)
-          return 0
-          ;;
-      esac
-    fi
-  done
+  screen_select_libraries libraries selected_numbers "$MAIN_LIBRARY" "$DEST_BASE"
+  choice=$?
+  if (( choice != 0 )); then
+    case "$choice" in
+      2)
+        ui_leave
+        results=("No libraries selected. No changes applied.")
+        print_final_summary results "$DEST_BASE"
+        return 0
+        ;;
+      *)
+        return 0
+        ;;
+    esac
+  fi
 
   total="${#selected_numbers[@]}"
   mkdir -p "$DEST_BASE"
