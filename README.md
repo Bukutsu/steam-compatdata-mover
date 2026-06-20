@@ -1,20 +1,26 @@
 # steam-compatdata-mover
 
-Interactive Bash script for moving Steam `steamapps/compatdata` folders into your main Steam library, then replacing each original compatdata folder with a symlink.
+Interactive Bash script for moving Steam `steamapps/compatdata` folders (Proton prefixes/saves) from secondary drives (like NTFS) to your native main Steam library, replacing the original directories with symbolic links.
+
+## What it Fixes
+- **NTFS Ownership Errors:** Fixes the common Proton/Wine error: `wineserver: .../compatdata/.../pfx is not owned by you` (since NTFS partitions lack Unix ownership features required by Wine).
+- **Broken/Outdated Symlinks:** Automatically heals and redirects legacy or broken symlinks pointing to outdated paths.
 
 ## Usage
 
 ```bash
-./steam-compatdata-mover.sh
+./steam-compatdata-mover.sh [options]
 ```
 
-Close Steam before running the script. Do not run it with `sudo`.
+### Options:
+- `-c, --cli`  : Force text-only mode (bypasses the terminal TUI).
+- `-y, --yes`  : Auto-confirm all prompts (useful for automation).
+- `-a, --all`  : Select and process all detected movable libraries.
+- `-h, --help` : Show help instructions.
 
-In a capable terminal, the script opens a keyboard-driven TUI for choosing which libraries to move. It checks common Steam locations, then does a targeted native filesystem search for `steamapps/libraryfolders.vdf` files in likely Steam and mount locations.
+*Note: Close Steam before running the script. Do not run it with `sudo`.*
 
 ## Notes
-
-- Automatic destination: `<main Steam library>/steamapps/compatdata`
-- Existing non-empty destinations are skipped to avoid overwriting data.
-- Already symlinked compatdata folders are skipped.
-- The text prompt flow is used automatically if the terminal UI is not available.
+- **Automatic Destination:** `<main Steam library>/steamapps/compatdata`
+- **Headless automation:** Running with `-a -y` is ideal for login scripts.
+- **Data safety:** Destination folders are validated with disk space checks before copying to prevent file corruption.
