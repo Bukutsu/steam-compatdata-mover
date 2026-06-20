@@ -130,8 +130,8 @@ get_mounts() {
 
 scan_all_mounted_drives() {
   echo
-  echo "Scanning mounted drives for steamapps folders."
-  echo "This can take a while on large drives."
+  echo "Scanning mounted drives for libraryfolders.vdf files."
+  echo "This is faster than searching for every steamapps folder."
 
   local mountpoint
   while IFS= read -r mountpoint; do
@@ -144,15 +144,13 @@ scan_all_mounted_drives() {
 
     echo "Scanning: $mountpoint"
 
-    while IFS= read -r -d '' steamapps_dir; do
-      local root
-      root="$(dirname "$steamapps_dir")"
-      add_library "$root" "drive scan"
+    while IFS= read -r -d '' libraryfolders_file; do
+      parse_libraryfolders_vdf "$libraryfolders_file"
     done < <(
       find "$mountpoint" \
         -xdev \
         \( -path '*/.cache' -o -path '*/.Trash-*' -o -path '*/lost+found' \) -prune -o \
-        -type d -name steamapps -print0 2>/dev/null
+        -type f -name libraryfolders.vdf -print0 2>/dev/null
     )
   done < <(get_mounts)
 }
@@ -365,7 +363,7 @@ main() {
 
   scan_known_steam_configs
 
-  if prompt_yes_no "Also scan all mounted drives for Steam libraries?" "y"; then
+  if prompt_yes_no "Also search mounted drives for libraryfolders.vdf?" "y"; then
     scan_all_mounted_drives
   fi
 
