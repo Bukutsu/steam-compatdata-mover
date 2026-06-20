@@ -346,10 +346,26 @@ print_libraries() {
   done
 }
 
+load_selectable_libraries() {
+  local -n out_ref="$1"
+  local lib normalized_main
+
+  normalized_main="$(normalize_path "$MAIN_LIBRARY")"
+
+  mapfile -t out_ref < <(
+    for lib in "${!LIBS[@]}"; do
+      if [[ "$(normalize_path "$lib")" != "$normalized_main" ]]; then
+        printf '%s\n' "$lib"
+      fi
+    done | sort
+  )
+}
+
 parse_selection() {
   local input="$1"
   local max="$2"
-  local -n out_ref=$3
+  # shellcheck disable=SC2178
+  local -n out_ref="$3"
 
   out_ref=()
 
@@ -394,12 +410,11 @@ parse_selection() {
 }
 
 screen_render_selection() {
-  local -n libs_ref=$1
-  local -n checked_ref=$2
+  local -n libs_ref="$1"
+  local -n checked_ref="$2"
   local cursor_index="$3"
   local title="Steam compatdata mover"
   local main_library="$4"
-  local dest_base="$5"
   local total="${#libs_ref[@]}"
   local selected=0
   local i
@@ -415,13 +430,12 @@ screen_render_selection() {
 
   printf '%s\n' "$title"
   printf 'Main library: %s\n' "$main_library"
-  printf 'Destination:  %s\n' "$dest_base"
   printf 'Selected:     %d/%d\n' "$selected" "$total"
   printf '\n'
   printf 'Move selection\n'
   printf '\n'
 
-  local header_rows=7
+  local header_rows=6
   local footer_rows=4
   local list_rows=$((ui_rows - header_rows - footer_rows))
   if (( list_rows < 3 )); then
@@ -471,10 +485,10 @@ screen_render_selection() {
 }
 
 screen_select_libraries() {
-  local -n libs_ref=$1
-  local -n out_ref=$2
+  local -n libs_ref="$1"
+  # shellcheck disable=SC2178
+  local -n out_ref="$2"
   local main_library="$3"
-  local dest_base="$4"
   local total="${#libs_ref[@]}"
   local -a checked=()
   local cursor=0
@@ -482,14 +496,14 @@ screen_select_libraries() {
 
   for ((i=0; i<total; i++)); do
     if [[ "$(library_status_label "${libs_ref[$i]}")" == "local" ]]; then
-      checked[$i]=1
+      checked[i]=1
     else
-      checked[$i]=0
+      checked[i]=0
     fi
   done
 
   while true; do
-    screen_render_selection "$1" checked "$cursor" "$main_library" "$dest_base"
+    screen_render_selection "$1" checked "$cursor" "$main_library"
     key="$(ui_read_key)" || return 1
 
     case "$key" in
@@ -511,19 +525,19 @@ screen_select_libraries() {
         ;;
       SPACE)
         if [[ "${checked[$cursor]:-0}" -eq 1 ]]; then
-          checked[$cursor]=0
+          checked[cursor]=0
         else
-          checked[$cursor]=1
+          checked[cursor]=1
         fi
         ;;
       a|A)
         for ((i=0; i<total; i++)); do
-          checked[$i]=1
+          checked[i]=1
         done
         ;;
       n|N)
         for ((i=0; i<total; i++)); do
-          checked[$i]=0
+          checked[i]=0
         done
         ;;
       ENTER)
@@ -554,45 +568,23 @@ screen_show_progress() {
   local current="$1"
   local total="$2"
   local lib="$3"
-  local dest="$4"
-  local message="$5"
+  local message="$4"
 
   ui_refresh_size
   ui_clear
   printf 'Steam compatdata mover\n\n'
   printf 'Processing %d/%d\n' "$current" "$total"
   printf 'Library:     %s\n' "$lib"
-  printf 'Destination:  %s\n' "$dest"
   printf '\n'
   printf '%s\n' "$message"
 }
 
-screen_show_summary() {
-  local -n results_ref=$1
-  local dest_base="$2"
-  local i
-
-  ui_refresh_size
-  ui_clear
-  printf 'Steam compatdata mover\n\n'
-  printf 'Finished.\n'
-  printf 'Destination: %s\n' "$dest_base"
-  printf '\n'
-  for i in "${results_ref[@]}"; do
-    printf '%s\n' "$i"
-  done
-  printf '\nPress any key to exit.\n'
-  ui_read_key >/dev/null || true
-}
-
 print_final_summary() {
-  local -n results_ref=$1
-  local dest_base="$2"
+  local -n results_ref="$1"
   local i
 
   printf 'Steam compatdata mover\n\n'
   printf 'Finished.\n'
-  printf 'Destination: %s\n' "$dest_base"
   printf '\n'
   for i in "${results_ref[@]}"; do
     printf '%s\n' "$i"
@@ -686,8 +678,6 @@ move_library_compatdata() {
     echo "  $lib"
     echo "Compatdata:"
     echo "  $compat"
-    echo "Destination:"
-    echo "  $dest"
   fi
 
   if [[ ! -d "$steamapps" ]]; then
@@ -765,6 +755,7 @@ move_library_compatdata() {
 
 run_text_flow() {
   local DEST_BASE
+  local -a libraries=()
   local -a selected_numbers=()
   local result
   local num
@@ -783,16 +774,12 @@ run_text_flow() {
   scan_known_steam_configs
   scan_libraryfolders_files
 
-  mapfile -t libraries < <(
-    for lib in "${!LIBS[@]}"; do
-      printf '%s\n' "$lib"
-    done | sort
-  )
+  load_selectable_libraries libraries
 
   if (( ${#libraries[@]} == 0 )); then
     echo
-    echo "No Steam libraries found."
-    exit 1
+    echo "No movable Steam libraries found."
+    exit 0
   fi
 
   if ! DEST_BASE="$(destination_base_for_main_library)"; then
@@ -804,10 +791,6 @@ run_text_flow() {
   echo "Main Steam library:"
   echo "  $MAIN_LIBRARY"
   echo
-  echo "Automatic destination:"
-  echo "  $DEST_BASE"
-  echo
-
   echo "Choose libraries to move."
   echo "Examples:"
   echo "  all"
@@ -853,6 +836,7 @@ run_text_flow() {
 
 run_tui_flow() {
   local DEST_BASE
+  local -a libraries=()
   local -a selected_numbers=()
   local -a results=()
   local choice
@@ -870,19 +854,16 @@ run_tui_flow() {
   scan_known_steam_configs
   scan_libraryfolders_files
 
-  mapfile -t libraries < <(
-    for lib in "${!LIBS[@]}"; do
-      printf '%s\n' "$lib"
-    done | sort
-  )
+  load_selectable_libraries libraries
 
   if (( ${#libraries[@]} == 0 )); then
     ui_clear
     printf 'Steam compatdata mover\n\n'
-    printf 'No Steam libraries found.\n'
-    printf '\nPress any key to exit.\n'
-    ui_read_key >/dev/null || true
-    return 1
+    printf 'No movable Steam libraries found.\n'
+    ui_leave
+    results=("No movable Steam libraries found. No changes applied.")
+    print_final_summary results
+    return 0
   fi
 
   if ! DEST_BASE="$(destination_base_for_main_library)"; then
@@ -894,14 +875,14 @@ run_tui_flow() {
     return 1
   fi
 
-  screen_select_libraries libraries selected_numbers "$MAIN_LIBRARY" "$DEST_BASE"
+  screen_select_libraries libraries selected_numbers "$MAIN_LIBRARY"
   choice=$?
   if (( choice != 0 )); then
     case "$choice" in
       2)
         ui_leave
         results=("No libraries selected. No changes applied.")
-        print_final_summary results "$DEST_BASE"
+        print_final_summary results
         return 0
         ;;
       *)
@@ -916,7 +897,7 @@ run_tui_flow() {
   idx=1
   for num in "${selected_numbers[@]}"; do
     lib="${libraries[$((num-1))]}"
-    screen_show_progress "$idx" "$total" "$lib" "$DEST_BASE" "Moving compatdata..."
+    screen_show_progress "$idx" "$total" "$lib" "Moving compatdata..."
     if result="$(move_library_compatdata "$lib" "$DEST_BASE" 1)"; then
       case "$result" in
         moved:*)
@@ -937,7 +918,7 @@ run_tui_flow() {
   done
 
   ui_leave
-  print_final_summary results "$DEST_BASE"
+  print_final_summary results
 }
 
 main() {
