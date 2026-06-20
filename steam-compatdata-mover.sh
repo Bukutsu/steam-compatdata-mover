@@ -456,9 +456,9 @@ screen_render_selection() {
     end_index=$total
   fi
 
-  local line index marker checkbox label state lib_width status_width
+  local line index marker checkbox label lib_width status_width
   status_width=12
-  lib_width=$((ui_cols - 24 - status_width))
+  lib_width=$((ui_cols - 19 - status_width))
   if (( lib_width < 20 )); then
     lib_width=20
   fi
@@ -467,14 +467,12 @@ screen_render_selection() {
     marker=" "
     [[ "$index" -eq "$cursor_index" ]] && marker=">"
     checkbox="[ ]"
-    state="OFF"
     if [[ "${checked_ref[$index]:-0}" -eq 1 ]]; then
       checkbox="[X]"
-      state="ON "
     fi
     label="$(library_status_label "${libs_ref[$index]}")"
     line="$(ui_truncate "${libs_ref[$index]}" "$lib_width")"
-    printf '%s %s %s %3d %-12s %s\n' "$marker" "$checkbox" "$state" $((index + 1)) "[$label]" "$line"
+    printf '%s %s %3d %-12s %s\n' "$marker" "$checkbox" $((index + 1)) "[$label]" "$line"
   done
 
   printf '\n'
@@ -571,6 +569,7 @@ screen_confirm_selection() {
   local main_library="$4"
   local title="Confirm move"
   local total="${#selected_ref[@]}"
+  local action=0
   local i
 
   while true; do
@@ -603,10 +602,31 @@ screen_confirm_selection() {
     fi
 
     printf '\n'
-    printf 'Press y to apply, b to go back, q to quit.\n'
+    if (( action == 0 )); then
+      printf '> Apply changes\n'
+      printf '  Back\n'
+    else
+      printf '  Apply changes\n'
+      printf '> Back\n'
+    fi
+    printf '\n'
+    printf 'Use arrows, Enter, q.\n'
 
     case "$(ui_read_key)" in
-      y|Y|ENTER)
+      UP|DOWN)
+        if (( action == 0 )); then
+          action=1
+        else
+          action=0
+        fi
+        ;;
+      ENTER)
+        if (( action == 0 )); then
+          return 0
+        fi
+        return 2
+        ;;
+      y|Y)
         return 0
         ;;
       b|B)
