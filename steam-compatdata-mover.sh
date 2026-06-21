@@ -124,6 +124,38 @@ normalize_path() {
   fi
 }
 
+is_interix_symlink() {
+  local file="$1"
+  [[ -f "$file" && ! -L "$file" ]] || return 1
+  if head -c 20 "$file" 2>/dev/null | tr -d '\0' | grep -q "^IntxLNK"; then
+    return 0
+  fi
+  return 1
+}
+
+read_interix_symlink() {
+  local file="$1"
+  local target=""
+  if target="$(iconv -f UTF-16LE -t UTF-8 "$file" 2>/dev/null)"; then
+    target="${target#IntxLNK}"
+  else
+    target="$(tr -d '\0' < "$file")"
+    target="${target#IntxLNK}"
+  fi
+  printf '%s\n' "$(echo "$target" | xargs)"
+}
+
+resolve_symlink_target() {
+  local file="$1"
+  if [[ -L "$file" ]]; then
+    readlink "$file"
+  elif is_interix_symlink "$file"; then
+    read_interix_symlink "$file"
+  else
+    echo ""
+  fi
+}
+
 library_status_label() {
   local lib="$1"
   local status
@@ -141,7 +173,7 @@ library_status_label() {
       dest="$(destination_base_for_main_library 2>/dev/null || echo "")"
       if [[ -n "$dest" ]]; then
         local current_target
-        current_target="$(readlink "$lib/steamapps/compatdata")"
+        current_target="$(resolve_symlink_target "$lib/steamapps/compatdata")"
         if [[ "$(normalize_path "$current_target")" == "$(normalize_path "$dest")" ]]; then
           printf '%s\n' "symlinked"
         else
@@ -396,6 +428,8 @@ status_for_library() {
 
   if [[ -L "$compat" ]]; then
     echo "already symlinked -> $(readlink "$compat")"
+  elif is_interix_symlink "$compat"; then
+    echo "already symlinked -> $(read_interix_symlink "$compat")"
   elif [[ -d "$compat" ]]; then
     echo "local compatdata folder exists"
   else
@@ -836,20 +870,30 @@ move_library_compatdata() {
     return 0
   fi
 
-  if [[ -L "$compat" ]]; then
+  if [[ -L "$compat" ]] || is_interix_symlink "$compat"; then
     local current_target
-    current_target="$(readlink "$compat")"
+    current_target="$(resolve_symlink_target "$compat")"
     if [[ "$current_target" != /* ]]; then
       # Resolve relative symlink relative to the parent directory of $compat ($lib/steamapps)
       current_target="$(dirname "$compat")/$current_target"
     fi
 
     if [[ "$(normalize_path "$current_target")" == "$norm_dest" ]]; then
-      if [[ "$quiet" -eq 0 ]]; then
-        echo "Skipping: compatdata is already symlinked to the correct destination."
+      if [[ -L "$compat" ]]; then
+        if [[ "$quiet" -eq 0 ]]; then
+          echo "Skipping: compatdata is already symlinked to the correct destination."
+        fi
+        printf 'skipped: already symlinked for %s\n' "$lib"
+        return 0
+      else
+        if [[ "$quiet" -eq 0 ]]; then
+          echo "Updating legacy Interix symlink to a native symlink..."
+        fi
+        rm -f "$compat"
+        ln -s "$dest" "$compat"
+        printf 'updated: %s\n' "$lib"
+        return 0
       fi
-      printf 'skipped: already symlinked for %s\n' "$lib"
-      return 0
     fi
 
     if [[ "$quiet" -eq 0 ]]; then
