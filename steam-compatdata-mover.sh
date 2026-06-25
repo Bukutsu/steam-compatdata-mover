@@ -326,6 +326,20 @@ normalize_library_root() {
   normalize_path "$root"
 }
 
+can_create_native_symlink() {
+  local dir="$1"
+  local test_link="$dir/test_symlink_probe"
+  rm -f "$test_link"
+  if ln -s "test_target" "$test_link" 2>/dev/null; then
+    if [[ -L "$test_link" ]]; then
+      rm -f "$test_link"
+      return 0
+    fi
+    rm -f "$test_link"
+  fi
+  return 1
+}
+
 add_library() {
   local root="$1"
   local source="$2"
@@ -335,6 +349,34 @@ add_library() {
   root="$(normalize_library_root "$root")"
 
   if [[ -d "$root/steamapps" ]]; then
+    local compat="$root/steamapps/compatdata"
+    if is_interix_symlink "$compat"; then
+      if can_create_native_symlink "$root/steamapps"; then
+        local target
+        target="$(resolve_symlink_target "$compat")"
+        if [[ -n "$target" ]]; then
+          if [[ "$target" != /* ]]; then
+            target="$(dirname "$compat")/$target"
+          fi
+          target="$(normalize_path "$target")"
+          if [[ "${ui_supported:-0}" -ne 1 ]]; then
+            echo "Healing legacy Interix symlink to native symlink for:"
+            echo "  $compat -> $target"
+          fi
+          rm -f "$compat"
+          if ln -s "$target" "$compat"; then
+            if [[ "${ui_supported:-0}" -ne 1 ]]; then
+              echo "  Successfully healed."
+            fi
+          else
+            if [[ "${ui_supported:-0}" -ne 1 ]]; then
+              echo "  Error: Failed to create native symlink." >&2
+            fi
+          fi
+        fi
+      fi
+    fi
+
     LIBS["$root"]=1
 
     if [[ -n "${LIB_SOURCES[$root]:-}" ]]; then
