@@ -187,29 +187,13 @@ status_for_library() {
   fi
 }
 
-load_selectable_libraries() {
-  local -n out_ref="$1"
-  local lib normalized_main
-
-  normalized_main="$(normalize_path "$MAIN_LIBRARY")"
-
-  mapfile -t out_ref < <(
-    for lib in "${!LIBS[@]}"; do
-      if [[ "$(normalize_path "$lib")" != "$normalized_main" ]]; then
-        printf '%s\n' "$lib"
-      fi
-    done | sort
-  )
+print_selectable_libraries() {
+  local lib normalized_main="$(normalize_path "$MAIN_LIBRARY")"
+  for lib in "${!LIBS[@]}"; do
+    [[ "$(normalize_path "$lib")" != "$normalized_main" ]] && echo "$lib"
+  done | sort
 }
 
-destination_base_for_main_library() {
-  if [[ -z "$MAIN_LIBRARY" ]]; then
-    echo "Could not determine the main Steam library." >&2
-    return 1
-  fi
-
-  normalize_path "$MAIN_LIBRARY/steamapps/compatdata"
-}
 
 ensure_native_destination_ready() {
   local dest="$1"
@@ -314,12 +298,9 @@ move_library_compatdata() {
 
   if [[ -L "$compat" ]]; then
     local current_target
-    current_target="$(readlink "$compat")"
-    if [[ "$current_target" != /* ]]; then
-      current_target="$(dirname "$compat")/$current_target"
-    fi
+    current_target="$(readlink -f "$compat")"
 
-    if [[ "$(normalize_path "$current_target")" == "$norm_dest" ]]; then
+    if [[ "$current_target" == "$norm_dest" ]]; then
       if [[ "$quiet" -eq 0 ]]; then
         echo "Skipping: compatdata is already symlinked to the correct destination."
       fi
@@ -423,7 +404,7 @@ run_text_flow() {
 
   scan_known_steam_configs
 
-  load_selectable_libraries libraries
+  mapfile -t libraries < <(print_selectable_libraries)
 
   if (( ${#libraries[@]} == 0 )); then
     echo
@@ -431,9 +412,11 @@ run_text_flow() {
     exit 0
   fi
 
-  if ! DEST_BASE="$(destination_base_for_main_library)"; then
+  if [[ -z "$MAIN_LIBRARY" ]]; then
+    echo "Could not determine the main Steam library." >&2
     exit 1
   fi
+  DEST_BASE="$(normalize_path "$MAIN_LIBRARY/steamapps/compatdata")"
 
   echo
   echo "Main Steam library:"
@@ -511,10 +494,7 @@ run_text_flow() {
 }
 
 is_steam_running() {
-  if pgrep -x "steam" >/dev/null 2>&1 || pgrep -x "steamwebhelper" >/dev/null 2>&1; then
-    return 0
-  fi
-  return 1
+  pgrep -x "steam|steamwebhelper" >/dev/null 2>&1
 }
 
 main() {
