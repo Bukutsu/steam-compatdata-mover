@@ -13,8 +13,7 @@ if [[ "${EUID}" -eq 0 ]]; then
   exit 1
 fi
 
-USER_NAME="${USER:-$(id -un)}"
-USER_GROUP="$(id -gn)"
+
 
 # --- Configuration & Globals ---
 declare -a STEAM_VDF_CANDIDATES=(
@@ -29,14 +28,6 @@ declare -a STEAM_MAIN_CANDIDATES=(
   "$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam"
 )
 
-declare -a SEARCH_ROOTS=(
-  "$HOME/.local/share"
-  "$HOME/.steam"
-  "$HOME/.var/app/com.valvesoftware.Steam/.local/share"
-  "/run/media/$USER_NAME"
-  "/media/$USER_NAME"
-  "/mnt"
-)
 
 AUTO_YES=0
 AUTO_ALL=0
@@ -182,34 +173,6 @@ scan_known_steam_configs() {
   done
 }
 
-scan_libraryfolders_files() {
-  echo
-  echo "Searching likely Steam locations for libraryfolders.vdf files."
-
-  local root max_depth
-  for root in "${SEARCH_ROOTS[@]}"; do
-    [[ -d "$root" ]] || continue
-
-    echo "Searching: $root"
-
-    # Use shallower depth limit on large mount points to prevent long scans
-    if [[ "$root" == "/mnt"* || "$root" == "/media"* || "$root" == "/run/media"* ]]; then
-      max_depth=4
-    else
-      max_depth=6
-    fi
-
-    while IFS= read -r -d '' libraryfolders_file; do
-      parse_libraryfolders_vdf "$libraryfolders_file"
-    done < <(
-      find "$root" \
-        -xdev \
-        -maxdepth "$max_depth" \
-        \( -path '*/.cache' -o -path '*/.Trash-*' -o -path '*/lost+found' -o -path '*/Trash/files' -o -path '*/.git' -o -path '*/node_modules' -o -path '*/Projects' \) -prune -o \
-        -path '*/steamapps/libraryfolders.vdf' -type f -print0 2>/dev/null
-    )
-  done
-}
 
 status_for_library() {
   local lib="$1"
@@ -303,72 +266,7 @@ move_directory_entries() {
   fi
 }
 
-fix_ownership_if_needed() {
-  local target="$1"
-  local quiet="${2:-0}"
 
-  if [[ ! -e "$target" || -O "$target" || "$quiet" -eq 1 ]]; then
-    return 0
-  fi
-
-  echo
-  echo "The moved compatdata is not owned by your current user."
-  echo "Target: $target"
-
-  if command -v sudo >/dev/null 2>&1; then
-    if prompt_yes_no "Use sudo to chown it to $USER_NAME:$USER_GROUP?" "y"; then
-      sudo chown -R "$USER_NAME:$USER_GROUP" "$target"
-    fi
-  else
-    echo "sudo was not found. You may need to run manually:"
-    echo "  sudo chown -R '$USER_NAME:$USER_GROUP' '$target'"
-  fi
-}
-
-check_disk_space() {
-  local src="$1"
-  local dest="$2"
-
-  if [[ ! -d "$src" ]]; then
-    return 0
-  fi
-
-  local src_size=0
-  if command -v du >/dev/null 2>&1; then
-    local du_out
-    du_out="$(du -sk "$src" 2>/dev/null || echo "")"
-    if [[ -n "$du_out" ]]; then
-      src_size=$(echo "$du_out" | awk '{print $1 * 1024}')
-    fi
-  fi
-
-  local dest_avail=0
-  if command -v df >/dev/null 2>&1; then
-    local df_out
-    df_out="$(df -Pk "$dest" 2>/dev/null | tail -n 1 || echo "")"
-    if [[ -n "$df_out" ]]; then
-      dest_avail=$(echo "$df_out" | awk '{print $4 * 1024}')
-    fi
-  fi
-
-  if (( src_size == 0 || dest_avail == 0 )); then
-    return 0
-  fi
-
-  # 50MB safety margin
-  local required=$((src_size + 52428800))
-
-  if (( dest_avail < required )); then
-    local src_size_mb=$((src_size / 1048576))
-    local dest_avail_mb=$((dest_avail / 1048576))
-    echo "Error: Not enough disk space on destination filesystem." >&2
-    echo "  Required (with margin): ${src_size_mb} MB" >&2
-    echo "  Available:             ${dest_avail_mb} MB" >&2
-    return 1
-  fi
-
-  return 0
-}
 
 move_library_compatdata() {
   local lib="$1"
@@ -436,11 +334,6 @@ move_library_compatdata() {
     fi
 
     if [[ -d "$current_target" && ! -L "$current_target" ]]; then
-      if ! check_disk_space "$current_target" "$dest"; then
-        printf 'skipped: insufficient disk space for %s\n' "$lib"
-        return 0
-      fi
-
       if [[ "$quiet" -eq 0 ]]; then
         echo "Moving files from old target to new destination..."
       fi
@@ -480,11 +373,6 @@ move_library_compatdata() {
   fi
 
   if [[ -d "$compat" ]]; then
-    if ! check_disk_space "$compat" "$dest"; then
-      printf 'skipped: insufficient disk space for %s\n' "$lib"
-      return 0
-    fi
-
     if [[ "$quiet" -eq 0 ]]; then
       echo "Moving compatdata..."
     fi
@@ -505,8 +393,6 @@ move_library_compatdata() {
     echo "Creating symlink..."
   fi
   ln -s "$dest" "$compat"
-
-  fix_ownership_if_needed "$dest" "$quiet"
 
   if [[ "$quiet" -eq 0 ]]; then
     echo "Done: $compat -> $dest"
@@ -536,7 +422,6 @@ run_text_flow() {
   fi
 
   scan_known_steam_configs
-  scan_libraryfolders_files
 
   load_selectable_libraries libraries
 
