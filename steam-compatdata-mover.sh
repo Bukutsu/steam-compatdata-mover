@@ -6,7 +6,6 @@ set -Eeuo pipefail
 # library, then replaces the original compatdata folder with a symlink.
 #
 # Do NOT run this script with sudo.
-# Run Steam normally after using it.
 
 if [[ "${EUID}" -eq 0 ]]; then
   echo "Do not run this script as root/sudo."
@@ -39,7 +38,6 @@ declare -a SEARCH_ROOTS=(
   "/mnt"
 )
 
-ui_supported=0
 AUTO_YES=0
 AUTO_ALL=0
 
@@ -110,68 +108,7 @@ prompt_yes_no() {
 }
 
 normalize_path() {
-  local path="$1"
-
-  if command -v realpath >/dev/null 2>&1; then
-    realpath -m "$path" 2>/dev/null || printf '%s\n' "$path"
-  else
-    printf '%s\n' "$path"
-  fi
-}
-
-is_interix_symlink() {
-  local file="$1"
-  [[ -f "$file" && ! -L "$file" ]] || return 1
-  if head -c 20 "$file" 2>/dev/null | tr -d '\0' | grep -q "^IntxLNK"; then
-    return 0
-  fi
-  return 1
-}
-
-read_interix_symlink() {
-  local file="$1"
-  local target=""
-  if target="$(iconv -f UTF-16LE -t UTF-8 "$file" 2>/dev/null)"; then
-    target="${target#IntxLNK}"
-  else
-    target="$(tr -d '\0' < "$file")"
-    target="${target#IntxLNK}"
-  fi
-  printf '%s\n' "$(echo "$target" | xargs)"
-}
-
-resolve_symlink_target() {
-  local file="$1"
-  if [[ -L "$file" ]]; then
-    readlink "$file"
-  elif is_interix_symlink "$file"; then
-    read_interix_symlink "$file"
-  else
-    echo ""
-  fi
-}
-
-
-
-normalize_library_root() {
-  local root="$1"
-
-  root="${root/#\~/$HOME}"
-  normalize_path "$root"
-}
-
-can_create_native_symlink() {
-  local dir="$1"
-  local test_link="$dir/test_symlink_probe"
-  rm -f "$test_link"
-  if ln -s "test_target" "$test_link" 2>/dev/null; then
-    if [[ -L "$test_link" ]]; then
-      rm -f "$test_link"
-      return 0
-    fi
-    rm -f "$test_link"
-  fi
-  return 1
+  realpath -m "$1" 2>/dev/null || echo "$1"
 }
 
 add_library() {
@@ -180,39 +117,11 @@ add_library() {
 
   [[ -z "$root" ]] && return 0
 
-  root="$(normalize_library_root "$root")"
+  root="${root/#\~/$HOME}"
+  root="$(normalize_path "$root")"
 
   if [[ -d "$root/steamapps" ]]; then
-    local compat="$root/steamapps/compatdata"
-    if is_interix_symlink "$compat"; then
-      if can_create_native_symlink "$root/steamapps"; then
-        local target
-        target="$(resolve_symlink_target "$compat")"
-        if [[ -n "$target" ]]; then
-          if [[ "$target" != /* ]]; then
-            target="$(dirname "$compat")/$target"
-          fi
-          target="$(normalize_path "$target")"
-          if [[ "${ui_supported:-0}" -ne 1 ]]; then
-            echo "Healing legacy Interix symlink to native symlink for:"
-            echo "  $compat -> $target"
-          fi
-          rm -f "$compat"
-          if ln -s "$target" "$compat"; then
-            if [[ "${ui_supported:-0}" -ne 1 ]]; then
-              echo "  Successfully healed."
-            fi
-          else
-            if [[ "${ui_supported:-0}" -ne 1 ]]; then
-              echo "  Error: Failed to create native symlink." >&2
-            fi
-          fi
-        fi
-      fi
-    fi
-
     LIBS["$root"]=1
-
     if [[ -n "${LIB_SOURCES[$root]:-}" ]]; then
       LIB_SOURCES["$root"]+=", $source"
     else
@@ -225,7 +134,8 @@ add_main_library() {
   local root="$1"
   local source="$2"
 
-  root="$(normalize_library_root "$root")"
+  root="${root/#\~/$HOME}"
+  root="$(normalize_path "$root")"
   add_library "$root" "$source"
 
   if [[ -z "$MAIN_LIBRARY" && -d "$root/steamapps" ]]; then
@@ -273,18 +183,14 @@ scan_known_steam_configs() {
 }
 
 scan_libraryfolders_files() {
-  if [[ "$ui_supported" -eq 0 ]]; then
-    echo
-    echo "Searching likely Steam locations for libraryfolders.vdf files."
-  fi
+  echo
+  echo "Searching likely Steam locations for libraryfolders.vdf files."
 
   local root
   for root in "${SEARCH_ROOTS[@]}"; do
     [[ -d "$root" ]] || continue
 
-    if [[ "$ui_supported" -eq 0 ]]; then
-      echo "Searching: $root"
-    fi
+    echo "Searching: $root"
 
     while IFS= read -r -d '' libraryfolders_file; do
       parse_libraryfolders_vdf "$libraryfolders_file"
@@ -292,7 +198,7 @@ scan_libraryfolders_files() {
       find "$root" \
         -xdev \
         -maxdepth 6 \
-        \( -path '*/.cache' -o -path '*/.Trash-*' -o -path '*/lost+found' -o -path '*/Trash/files' \) -prune -o \
+        \( -path '*/.cache' -o -path '*/.Trash-*' -o -path 'lost+found' -o -path '*/Trash/files' \) -prune -o \
         -path '*/steamapps/libraryfolders.vdf' -type f -print0 2>/dev/null
     )
   done
@@ -304,8 +210,6 @@ status_for_library() {
 
   if [[ -L "$compat" ]]; then
     echo "already symlinked -> $(readlink "$compat")"
-  elif is_interix_symlink "$compat"; then
-    echo "already symlinked -> $(read_interix_symlink "$compat")"
   elif [[ -d "$compat" ]]; then
     echo "local compatdata folder exists"
   else
@@ -326,22 +230,6 @@ load_selectable_libraries() {
       fi
     done | sort
   )
-}
-
-
-
-
-
-print_final_summary() {
-  local -n results_ref="$1"
-  local i
-
-  printf 'Steam compatdata mover\n\n'
-  printf 'Finished.\n'
-  printf '\n'
-  for i in "${results_ref[@]}"; do
-    printf '%s\n' "$i"
-  done
 }
 
 destination_base_for_main_library() {
@@ -375,7 +263,7 @@ move_directory_entries() {
     base="$(basename "$item")"
     if [[ -e "$dest/$base" || -L "$dest/$base" ]]; then
       local target
-      target="$(resolve_symlink_target "$item")"
+      target="$(readlink "$item" 2>/dev/null || echo "")"
       if [[ -n "$target" ]]; then
         local norm_target norm_dest_item
         norm_target="$(normalize_path "$target")"
@@ -406,15 +294,7 @@ fix_ownership_if_needed() {
   local target="$1"
   local quiet="${2:-0}"
 
-  if [[ ! -e "$target" ]]; then
-    return 0
-  fi
-
-  if [[ -O "$target" ]]; then
-    return 0
-  fi
-
-  if [[ "$quiet" -eq 1 ]]; then
+  if [[ ! -e "$target" || -O "$target" || "$quiet" -eq 1 ]]; then
     return 0
   fi
 
@@ -488,10 +368,8 @@ move_library_compatdata() {
 
   if [[ "$quiet" -eq 0 ]]; then
     echo
-    echo "Library:"
-    echo "  $lib"
-    echo "Compatdata:"
-    echo "  $compat"
+    echo "Library:    $lib"
+    echo "Compatdata: $compat"
   fi
 
   if [[ ! -d "$steamapps" ]]; then
@@ -523,30 +401,19 @@ move_library_compatdata() {
     return 0
   fi
 
-  if [[ -L "$compat" ]] || is_interix_symlink "$compat"; then
+  if [[ -L "$compat" ]]; then
     local current_target
-    current_target="$(resolve_symlink_target "$compat")"
+    current_target="$(readlink "$compat")"
     if [[ "$current_target" != /* ]]; then
-      # Resolve relative symlink relative to the parent directory of $compat ($lib/steamapps)
       current_target="$(dirname "$compat")/$current_target"
     fi
 
     if [[ "$(normalize_path "$current_target")" == "$norm_dest" ]]; then
-      if [[ -L "$compat" ]]; then
-        if [[ "$quiet" -eq 0 ]]; then
-          echo "Skipping: compatdata is already symlinked to the correct destination."
-        fi
-        printf 'skipped: already symlinked for %s\n' "$lib"
-        return 0
-      else
-        if [[ "$quiet" -eq 0 ]]; then
-          echo "Updating legacy Interix symlink to a native symlink..."
-        fi
-        rm -f "$compat"
-        ln -s "$dest" "$compat"
-        printf 'updated: %s\n' "$lib"
-        return 0
+      if [[ "$quiet" -eq 0 ]]; then
+        echo "Skipping: compatdata is already symlinked to the correct destination."
       fi
+      printf 'skipped: already symlinked for %s\n' "$lib"
+      return 0
     fi
 
     if [[ "$quiet" -eq 0 ]]; then
@@ -629,8 +496,7 @@ move_library_compatdata() {
   fix_ownership_if_needed "$dest" "$quiet"
 
   if [[ "$quiet" -eq 0 ]]; then
-    echo "Done:"
-    echo "  $compat -> $dest"
+    echo "Done: $compat -> $dest"
   fi
   printf 'moved: %s\n' "$lib"
 }
