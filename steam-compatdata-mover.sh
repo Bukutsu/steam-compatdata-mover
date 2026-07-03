@@ -186,19 +186,26 @@ scan_libraryfolders_files() {
   echo
   echo "Searching likely Steam locations for libraryfolders.vdf files."
 
-  local root
+  local root max_depth
   for root in "${SEARCH_ROOTS[@]}"; do
     [[ -d "$root" ]] || continue
 
     echo "Searching: $root"
+
+    # Use shallower depth limit on large mount points to prevent long scans
+    if [[ "$root" == "/mnt"* || "$root" == "/media"* || "$root" == "/run/media"* ]]; then
+      max_depth=4
+    else
+      max_depth=6
+    fi
 
     while IFS= read -r -d '' libraryfolders_file; do
       parse_libraryfolders_vdf "$libraryfolders_file"
     done < <(
       find "$root" \
         -xdev \
-        -maxdepth 6 \
-        \( -path '*/.cache' -o -path '*/.Trash-*' -o -path 'lost+found' -o -path '*/Trash/files' \) -prune -o \
+        -maxdepth "$max_depth" \
+        \( -path '*/.cache' -o -path '*/.Trash-*' -o -path '*/lost+found' -o -path '*/Trash/files' -o -path '*/.git' -o -path '*/node_modules' -o -path '*/Projects' \) -prune -o \
         -path '*/steamapps/libraryfolders.vdf' -type f -print0 2>/dev/null
     )
   done
@@ -265,6 +272,12 @@ move_directory_entries() {
       local target
       target="$(readlink "$item" 2>/dev/null || echo "")"
       if [[ -n "$target" ]]; then
+        # Fast path: String comparison of target paths first (avoids subshells)
+        if [[ "$target" == "$dest/$base" ]]; then
+          rm -f "$item"
+          continue
+        fi
+
         local norm_target norm_dest_item
         norm_target="$(normalize_path "$target")"
         norm_dest_item="$(normalize_path "$dest/$base")"
