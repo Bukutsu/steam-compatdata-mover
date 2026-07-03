@@ -5,6 +5,7 @@ Interactive Bash script for moving Steam `steamapps/compatdata` folders (Proton 
 ## What it Fixes
 - **NTFS Ownership Errors:** Fixes the common Proton/Wine error: `wineserver: .../compatdata/.../pfx is not owned by you` (since NTFS partitions lack Unix ownership features required by Wine).
 - **Broken/Outdated Symlinks:** Automatically heals and redirects legacy or broken symlinks pointing to outdated paths.
+- **Existing Symlinks:** Cleanly resolves pre-existing individual game symlinks inside the secondary library's `compatdata` directory without causing conflict errors.
 
 ## Usage
 
@@ -13,7 +14,6 @@ Interactive Bash script for moving Steam `steamapps/compatdata` folders (Proton 
 ```
 
 ### Options:
-- `-c, --cli`  : Force text-only mode (bypasses the terminal TUI).
 - `-y, --yes`  : Auto-confirm all prompts (useful for automation).
 - `-a, --all`  : Select and process all detected movable libraries.
 - `-h, --help` : Show help instructions.
@@ -24,3 +24,4 @@ Interactive Bash script for moving Steam `steamapps/compatdata` folders (Proton 
 - **Automatic Destination:** `<main Steam library>/steamapps/compatdata`
 - **Headless automation:** Running with `-a -y` is ideal for login scripts.
 - **Data safety:** Destination folders are validated with disk space checks before copying to prevent file corruption.
+
