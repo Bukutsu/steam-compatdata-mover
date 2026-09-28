@@ -1,33 +1,27 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Interactive Steam compatdata mover
-# Moves selected Steam library steamapps/compatdata folders into your main Steam
-# library, then replaces the original compatdata folder with a symlink.
+# Move Steam compatdata directories from secondary libraries to the main Steam
+# library and replace them with symlinks.
 #
-# Do NOT run this script with sudo.
+# Do not run this script as root.
 
 if [[ "${EUID}" -eq 0 ]]; then
-  echo "Do not run this script as root/sudo."
-  echo "Run it as your normal Linux user."
+  echo "Do not run this script as root." >&2
   exit 1
 fi
 
-
-
-# --- Configuration & Globals ---
-declare -a STEAM_VDF_CANDIDATES=(
-  "$HOME/.local/share/Steam/steamapps/libraryfolders.vdf"
-  "$HOME/.steam/steam/steamapps/libraryfolders.vdf"
-  "$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/libraryfolders.vdf"
-)
-
-declare -a STEAM_MAIN_CANDIDATES=(
+STEAM_MAIN_CANDIDATES=(
   "$HOME/.local/share/Steam"
   "$HOME/.steam/steam"
   "$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam"
 )
 
+STEAM_VDF_CANDIDATES=(
+  "$HOME/.local/share/Steam/steamapps/libraryfolders.vdf"
+  "$HOME/.steam/steam/steamapps/libraryfolders.vdf"
+  "$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/libraryfolders.vdf"
+)
 
 AUTO_YES=0
 AUTO_ALL=0
@@ -36,29 +30,21 @@ show_help() {
   cat <<EOF
 Usage: $(basename "$0") [options]
 
-Options:
-  -y, --yes      Auto-confirm interactive prompts (useful for automation)
-  -a, --all      Select and process all detected movable libraries (non-interactive)
-  -h, --help     Show this help message and exit
+Move Steam compatdata directories from secondary libraries to the main Steam
+library and replace them with symlinks.
 
+Options:
+  -a, --all      Process all detected secondary libraries
+  -y, --yes      Confirm prompts automatically
+  -h, --help     Show this help message
 EOF
 }
 
-# Parse command line options
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -y|--yes)
-      AUTO_YES=1
-      shift
-      ;;
-    -a|--all)
-      AUTO_ALL=1
-      shift
-      ;;
-    -h|--help)
-      show_help
-      exit 0
-      ;;
+    -y|--yes) AUTO_YES=1; shift ;;
+    -a|--all) AUTO_ALL=1; shift ;;
+    -h|--help) show_help; exit 0 ;;
     *)
       echo "Unknown option: $1" >&2
       show_help >&2
@@ -67,10 +53,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-declare -A LIBS=()
-declare -A LIB_SOURCES=()
-declare -A VDF_FILES=()
-MAIN_LIBRARY=""
+is_steam_running() {
+  pgrep -x "steam|steamwebhelper" >/dev/null 2>&1
+}
 
 prompt_yes_no() {
   local prompt="$1"
@@ -98,341 +83,220 @@ prompt_yes_no() {
   done
 }
 
-normalize_path() {
-  realpath -m "$1" 2>/dev/null || echo "$1"
-}
-
-add_library() {
-  local root="$1"
-  local source="$2"
-
-  [[ -z "$root" ]] && return 0
-
-  root="${root/#\~/$HOME}"
-  root="$(normalize_path "$root")"
-
-  if [[ -d "$root/steamapps" ]]; then
-    LIBS["$root"]=1
-    if [[ -n "${LIB_SOURCES[$root]:-}" ]]; then
-      LIB_SOURCES["$root"]+=", $source"
-    else
-      LIB_SOURCES["$root"]="$source"
+find_main_library() {
+  local cand dir
+  for cand in "${STEAM_MAIN_CANDIDATES[@]}"; do
+    if [[ -d "$cand/steamapps" ]]; then
+      realpath -m "$cand"
+      return 0
     fi
-  fi
-}
-
-add_main_library() {
-  local root="$1"
-  local source="$2"
-
-  root="${root/#\~/$HOME}"
-  root="$(normalize_path "$root")"
-  add_library "$root" "$source"
-
-  if [[ -z "$MAIN_LIBRARY" && -d "$root/steamapps" ]]; then
-    MAIN_LIBRARY="$root"
-  fi
-}
-
-parse_libraryfolders_vdf() {
-  local file="$1"
-
-  [[ -f "$file" ]] || return 0
-
-  file="$(normalize_path "$file")"
-  if [[ -n "${VDF_FILES[$file]:-}" ]]; then
-    return 0
-  fi
-  VDF_FILES["$file"]=1
-
-  local base
-  base="$(dirname "$(dirname "$file")")"
-
-  add_main_library "$base" "Steam main library"
-
-  while IFS= read -r path; do
-    path="${path//\\\\/\\}"
-    add_library "$path" "libraryfolders.vdf"
-  done < <(
-    sed -nE \
-      -e 's/^[[:space:]]*"path"[[:space:]]*"([^"]+)".*/\1/p' \
-      -e 's/^[[:space:]]*"[0-9]+"[[:space:]]*"([^"/\\]*[/\\][^"]*)".*/\1/p' \
-      "$file"
-  )
-}
-
-scan_known_steam_configs() {
-  local file
-  for file in "${STEAM_VDF_CANDIDATES[@]}"; do
-    parse_libraryfolders_vdf "$file"
   done
 
-  local path
-  for path in "${STEAM_MAIN_CANDIDATES[@]}"; do
-    add_main_library "$path" "Common Steam path"
+  for cand in "${STEAM_VDF_CANDIDATES[@]}"; do
+    if [[ -f "$cand" ]]; then
+      dir="$(dirname "$(dirname "$cand")")"
+      if [[ -d "$dir/steamapps" ]]; then
+        realpath -m "$dir"
+        return 0
+      fi
+    fi
   done
+
+  return 1
 }
 
+find_secondary_libraries() {
+  local main_lib="$1"
+  local vdf path
+  local -A seen=()
 
-status_for_library() {
+  for vdf in "${STEAM_VDF_CANDIDATES[@]}"; do
+    [[ -f "$vdf" ]] || continue
+
+    while IFS= read -r path; do
+      path="${path//\\\\/\\}"
+      path="${path/#\~/$HOME}"
+      path="$(realpath -m "$path" 2>/dev/null || echo "$path")"
+
+      if [[ -d "$path/steamapps" && "$path" != "$main_lib" ]]; then
+        if [[ -z "${seen[$path]:-}" ]]; then
+          seen["$path"]=1
+          printf '%s\n' "$path"
+        fi
+      fi
+    done < <(
+      sed -nE \
+        -e 's/^[[:space:]]*"path"[[:space:]]*"([^"]+)".*/\1/p' \
+        -e 's/^[[:space:]]*"[0-9]+"[[:space:]]*"([^"/\\]*[/\\][^"]*)".*/\1/p' \
+        "$vdf"
+    )
+  done | sort -u
+}
+
+compatdata_status() {
   local lib="$1"
   local compat="$lib/steamapps/compatdata"
 
   if [[ -L "$compat" ]]; then
-    echo "already symlinked -> $(readlink "$compat")"
+    printf 'already symlinked -> %s' "$(readlink "$compat")"
   elif [[ -d "$compat" ]]; then
-    echo "local compatdata folder exists"
+    printf 'local compatdata folder exists'
   else
-    echo "no compatdata folder yet"
+    printf 'no compatdata folder yet'
   fi
-}
-
-print_selectable_libraries() {
-  local lib normalized_main="$(normalize_path "$MAIN_LIBRARY")"
-  for lib in "${!LIBS[@]}"; do
-    [[ "$(normalize_path "$lib")" != "$normalized_main" ]] && echo "$lib"
-  done | sort
-}
-
-
-ensure_native_destination_ready() {
-  local dest="$1"
-
-  if [[ -e "$dest" && ! -d "$dest" ]]; then
-    echo "Destination already exists and is not a directory:"
-    echo "  $dest"
-    return 1
-  fi
-
-  mkdir -p "$dest"
 }
 
 move_directory_entries() {
-  local src="$1"
-  local dest="$2"
-  local item base
-  local -a entries=()
+  local src="$1" dest="$2"
+  local item base target
+  local -a to_move=()
+  local -a symlinks_to_remove=()
 
   while IFS= read -r -d '' item; do
     base="$(basename "$item")"
     if [[ -e "$dest/$base" || -L "$dest/$base" ]]; then
-      local target
-      target="$(readlink "$item" 2>/dev/null || echo "")"
+      target="$(readlink "$item" 2>/dev/null || true)"
       if [[ -n "$target" ]]; then
-        # Fast path: String comparison of target paths first (avoids subshells)
-        if [[ "$target" == "$dest/$base" ]]; then
-          rm -f "$item"
-          continue
-        fi
-
-        local norm_target norm_dest_item
-        norm_target="$(normalize_path "$target")"
-        norm_dest_item="$(normalize_path "$dest/$base")"
-        if [[ "$norm_target" == "$norm_dest_item" ]]; then
-          rm -f "$item"
+        if [[ "$target" == "$dest/$base" || "$(realpath -m "$target")" == "$(realpath -m "$dest/$base")" ]]; then
+          symlinks_to_remove+=("$item")
           continue
         fi
       fi
+      echo "Conflict: '$dest/$base' already exists. Skipping library to prevent data loss." >&2
       return 1
     fi
-    entries+=("$item")
+    to_move+=("$item")
   done < <(find "$src" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
 
-  for item in "${entries[@]}"; do
+  for item in "${symlinks_to_remove[@]}"; do
+    rm -f "$item"
+  done
+
+  for item in "${to_move[@]}"; do
     if ! mv "$item" "$dest/"; then
-      echo "Error: Failed to move $item to $dest/" >&2
+      echo "Error moving '$item' to '$dest/'" >&2
       return 1
     fi
   done
 
   if ! rmdir "$src"; then
-    echo "Warning: Could not remove empty source directory $src" >&2
+    echo "Warning: could not remove empty directory '$src'" >&2
+    return 1
   fi
 }
 
-
-
-move_library_compatdata() {
-  local lib="$1"
-  local dest_base="$2"
-  local quiet="${3:-0}"
-
+migrate_library() {
+  local lib="$1" dest_base="$2"
   local steamapps="$lib/steamapps"
   local compat="$steamapps/compatdata"
-  local dest="$dest_base"
+  local lib_steamapps main_steamapps norm_dest current_target
 
-  if [[ "$quiet" -eq 0 ]]; then
-    echo
-    echo "Library:    $lib"
-    echo "Compatdata: $compat"
-  fi
+  echo "==> $lib"
 
   if [[ ! -d "$steamapps" ]]; then
-    if [[ "$quiet" -eq 0 ]]; then
-      echo "Skipping: steamapps folder does not exist."
-    fi
-    printf 'skipped: no steamapps for %s\n' "$lib"
+    echo "Skipping: steamapps directory not found."
     return 0
   fi
 
-  # Check for recursion/nested path issues
-  local norm_compat norm_dest
-  norm_compat="$(normalize_path "$compat")"
-  norm_dest="$(normalize_path "$dest")"
-  if [[ "$norm_dest" == "$norm_compat"/* || "$norm_compat" == "$norm_dest"/* ]]; then
-    if [[ "$quiet" -eq 0 ]]; then
-      echo "Skipping: nested library path detected between source and destination."
-    fi
-    printf 'skipped: nested path for %s\n' "$lib"
+  lib_steamapps="$(realpath -m "$steamapps")"
+  main_steamapps="$(realpath -m "$dest_base/..")"
+
+  if [[ "$lib_steamapps" == "$main_steamapps" ]]; then
+    echo "Skipping: already main library."
     return 0
   fi
 
-  if [[ "$norm_compat" == "$norm_dest" ]]; then
-    if [[ "$quiet" -eq 0 ]]; then
-      echo "Skipping: this is already the native main library compatdata folder."
-    fi
-    mkdir -p "$dest"
-    printf 'skipped: already native main library for %s\n' "$lib"
+  if [[ "$main_steamapps" == "$lib_steamapps"/* || "$lib_steamapps" == "$main_steamapps"/* ]]; then
+    echo "Skipping: nested library path detected."
     return 0
   fi
 
+  norm_dest="$(realpath -m "$dest_base")"
+  if [[ -e "$dest_base" && ! -d "$dest_base" ]]; then
+    echo "Error: destination '$dest_base' exists and is not a directory." >&2
+    return 1
+  fi
+  mkdir -p "$dest_base"
+
+  # Case 1: Already a symlink
   if [[ -L "$compat" ]]; then
-    local current_target
-    current_target="$(readlink -f "$compat")"
-
+    current_target="$(realpath -m "$compat" 2>/dev/null || readlink -f "$compat")"
     if [[ "$current_target" == "$norm_dest" ]]; then
-      if [[ "$quiet" -eq 0 ]]; then
-        echo "Skipping: compatdata is already symlinked to the correct destination."
-      fi
-      printf 'skipped: already symlinked for %s\n' "$lib"
+      echo "Already symlinked to $dest_base."
       return 0
     fi
 
-    if [[ "$quiet" -eq 0 ]]; then
-      echo "Existing symlink points to a different destination:"
-      echo "  Current: $current_target"
-      echo "  Target:  $dest"
-    fi
-
+    echo "Updating symlink from $current_target..."
     if [[ -d "$current_target" && ! -L "$current_target" ]]; then
-      if [[ "$quiet" -eq 0 ]]; then
-        echo "Moving files from old target to new destination..."
-      fi
-      ensure_native_destination_ready "$dest"
-      if ! move_directory_entries "$current_target" "$dest"; then
-        if [[ "$quiet" -eq 0 ]]; then
-          echo "Warning: failed to move all entries from old target. Skipping link update."
-        fi
-        printf 'skipped: old target conflict for %s\n' "$lib"
-        return 0
+      if ! move_directory_entries "$current_target" "$dest_base"; then
+        echo "Failed to move entries from old target. Leaving symlink unchanged." >&2
+        return 1
       fi
     fi
 
-    if [[ "$quiet" -eq 0 ]]; then
-      echo "Updating symlink..."
-    fi
     rm -f "$compat"
-    ln -s "$dest" "$compat"
-    printf 'updated: %s\n' "$lib"
+    ln -s "$dest_base" "$compat"
+    echo "Updated: $compat -> $dest_base"
     return 0
   fi
 
+  # Case 2: Not a directory and not a symlink
   if [[ -e "$compat" && ! -d "$compat" ]]; then
-    if [[ "$quiet" -eq 0 ]]; then
-      echo "Skipping: compatdata exists but is not a directory."
-    fi
-    printf 'skipped: compatdata not a directory for %s\n' "$lib"
+    echo "Skipping: $compat exists and is not a directory." >&2
     return 0
   fi
 
-  if ! ensure_native_destination_ready "$dest"; then
-    if [[ "$quiet" -eq 0 ]]; then
-      echo "Skipping this library to avoid overwriting data."
-    fi
-    printf 'skipped: destination not ready for %s\n' "$lib"
-    return 0
-  fi
-
+  # Case 3: Existing directory
   if [[ -d "$compat" ]]; then
-    if [[ "$quiet" -eq 0 ]]; then
-      echo "Moving compatdata..."
-    fi
-    if ! move_directory_entries "$compat" "$dest"; then
-      if [[ "$quiet" -eq 0 ]]; then
-        echo "Skipping this library to avoid overwriting data."
-      fi
-      printf 'skipped: destination conflict for %s\n' "$lib"
-      return 0
-    fi
-  else
-    if [[ "$quiet" -eq 0 ]]; then
-      echo "No compatdata folder exists yet; using native main compatdata folder."
+    echo "Moving compatdata contents to $dest_base..."
+    if ! move_directory_entries "$compat" "$dest_base"; then
+      echo "Failed to move compatdata. Leaving directory unchanged." >&2
+      return 1
     fi
   fi
 
-  if [[ "$quiet" -eq 0 ]]; then
-    echo "Creating symlink..."
-  fi
-  ln -s "$dest" "$compat"
-
-  if [[ "$quiet" -eq 0 ]]; then
-    echo "Done: $compat -> $dest"
-  fi
-  printf 'moved: %s\n' "$lib"
+  # Create symlink
+  ln -s "$dest_base" "$compat"
+  echo "Done: $compat -> $dest_base"
 }
 
-run_text_flow() {
-  local DEST_BASE
-  local -a libraries=()
-  local -a selected=()
-  local result
-  local lib
+main() {
+  local main_lib dest_base
+  local -a libraries=() selected=()
+  local lib choice
 
-  echo "Steam compatdata mover"
-  echo "======================"
-  echo "This script moves Proton prefixes (compatdata) from secondary libraries"
-  echo "to your main Linux library and replaces them with symbolic links."
-  echo "This fixes Wine/Proton launch errors on NTFS partitions."
-  echo
-  echo "Important: Close Steam before continuing."
-  echo
-
-  if ! prompt_yes_no "Continue?" "n"; then
-    echo "Cancelled."
-    exit 0
+  if is_steam_running; then
+    echo "Warning: Steam appears to be running."
+    if ! prompt_yes_no "Continue anyway?" "n"; then
+      exit 0
+    fi
   fi
 
-  scan_known_steam_configs
+  if ! main_lib="$(find_main_library)"; then
+    echo "Error: could not find main Steam library." >&2
+    exit 1
+  fi
+  dest_base="$main_lib/steamapps/compatdata"
 
-  mapfile -t libraries < <(print_selectable_libraries)
+  mapfile -t libraries < <(find_secondary_libraries "$main_lib")
 
   if (( ${#libraries[@]} == 0 )); then
-    echo
     echo "No secondary Steam libraries found to move."
     exit 0
   fi
 
-  if [[ -z "$MAIN_LIBRARY" ]]; then
-    echo "Could not determine the main Steam library." >&2
-    exit 1
-  fi
-  DEST_BASE="$(normalize_path "$MAIN_LIBRARY/steamapps/compatdata")"
-
-  echo
   echo "Main Steam library:"
-  echo "  $MAIN_LIBRARY"
+  echo "  $main_lib"
   echo
   echo "Secondary libraries detected:"
   local i=1
   for lib in "${libraries[@]}"; do
     echo "  [$i] $lib"
-    echo "      Source: ${LIB_SOURCES[$lib]}"
-    echo "      Status: $(status_for_library "$lib")"
+    echo "      Status: $(compatdata_status "$lib")"
     echo
     ((i += 1))
   done
 
-  # Determine selection
   if [[ "$AUTO_ALL" -eq 1 ]]; then
     selected=("${libraries[@]}")
   else
@@ -445,7 +309,7 @@ run_text_flow() {
           ;;
         n|no)
           echo
-          echo "Please select libraries individually:"
+          echo "Select libraries individually:"
           for lib in "${libraries[@]}"; do
             if prompt_yes_no "Process '$lib'?" "y"; then
               selected+=("$lib")
@@ -481,31 +345,13 @@ run_text_flow() {
     exit 0
   fi
 
-  mkdir -p "$DEST_BASE"
-
+  echo
   for lib in "${selected[@]}"; do
-    result="$(move_library_compatdata "$lib" "$DEST_BASE" 0)"
-    echo "$result"
+    migrate_library "$lib" "$dest_base"
   done
 
   echo
-  echo "Finished successfully!"
-  echo "You can now safely restart Steam."
-}
-
-is_steam_running() {
-  pgrep -x "steam|steamwebhelper" >/dev/null 2>&1
-}
-
-main() {
-  if is_steam_running; then
-    echo "Warning: Steam appears to be running."
-    if ! prompt_yes_no "Are you sure you want to continue?" "n"; then
-      exit 0
-    fi
-  fi
-
-  run_text_flow
+  echo "Finished. You can now safely restart Steam."
 }
 
 main "$@"
