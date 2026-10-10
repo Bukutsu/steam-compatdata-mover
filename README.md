@@ -1,35 +1,38 @@
 # steam-compatdata-mover
 
-A Bash script that moves Steam Proton prefixes from secondary libraries into your main Steam library. It replaces each secondary library's `steamapps/compatdata` directory with a symlink to `<main Steam library>/steamapps/compatdata`.
+Move Steam Proton prefixes from secondary libraries into your main Steam library, then link each secondary library's `steamapps/compatdata` folder to it. This can help fix `pfx is not owned by you` when games are on an NTFS drive. Game files stay where they are.
 
-This can help with the Wine ownership error `pfx is not owned by you` when a secondary library is on NTFS. The script also handles existing compatdata symlinks, including ones that point to an old location.
+## Run
 
-## Use
-
-Close Steam, then run the script as your normal user, without `sudo`:
+Close Steam, back up any prefixes you need to keep, and run this in a terminal as your normal user. Do not use `sudo`.
 
 ```bash
-./steam-compatdata-mover.sh
+curl -fsSLo steam-compatdata-mover.sh https://raw.githubusercontent.com/Bukutsu/steam-compatdata-mover/main/steam-compatdata-mover.sh && bash steam-compatdata-mover.sh
 ```
 
-The script finds libraries from Steam's `libraryfolders.vdf` and common Steam paths, including the Flatpak location. It shows the libraries it found and asks which ones to process before making changes.
+Requires Linux, Bash, and curl. The command downloads the script into your current folder and runs it only if the download succeeds. To review it first, run just the `curl` part, then open `steam-compatdata-mover.sh` before running it with Bash.
 
-Options:
+The script detects Steam libraries, including Flatpak installs, lists them, and asks which ones to move. It also updates existing compatdata symlinks that point to an old location.
 
-- `-a`, `--all`: select every detected secondary library.
-- `-y`, `--yes`: confirm yes/no prompts automatically.
-- `-h`, `--help`: show command help.
+## Options
 
-For unattended use, pass both `-a` and `-y`:
+After downloading, run `bash steam-compatdata-mover.sh` with:
+
+- `-a`, `--all`: select all detected secondary libraries.
+- `-y`, `--yes`: accept yes/no prompts automatically.
+- `-h`, `--help`: show help.
+
+For unattended use, close Steam first, then run:
 
 ```bash
-./steam-compatdata-mover.sh -a -y
+bash steam-compatdata-mover.sh -a -y
 ```
 
-## Before you run it
+## Before moving
 
-Back up any prefixes you need to keep. The script moves entries into the main library's `compatdata` directory. If an entry with the same name already exists there, it skips that library rather than merging the entries. Entries moved before a conflict are not rolled back.
-
-Make sure the main library has enough free space. The script does not check available disk space. With `-y`, it also accepts the warning if Steam appears to be running, so close Steam yourself before using it unattended.
+- Make sure the main library has enough free space. The script does not check it.
+- If a prefix with the same name already exists in the destination, the script skips that library instead of merging or overwriting it.
+- Failed moves are not rolled back. Keep a backup of prefixes you need.
+- With `-y`, the script also accepts the warning if Steam is still running.
 
 License: [GPL-3.0](LICENSE).
